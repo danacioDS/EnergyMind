@@ -2,7 +2,12 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
-from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.http.models import (
+    PointStruct,
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
 from sentence_transformers import SentenceTransformer
 
 from app.models.legal_unit import LegalUnit
@@ -16,22 +21,42 @@ class QdrantStore:
         self.collection_name = settings.qdrant_collection
 
     async def initialize(self):
+        """
+        Initialize Qdrant client and embedding model.
+        """
+
+        # FIX SSL ERROR:
+        # Use URL instead of host/port to force HTTP protocol
         self.client = QdrantClient(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
+            url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
+            prefer_grpc=False,
+            https=False,
+            timeout=60,
         )
+
+        logger.info(f"Connecting to Qdrant at {settings.qdrant_url}")
+
+        # Load embedding model
         self.embedder = SentenceTransformer(
             settings.embeddings_model,
             device=settings.embeddings_device,
+            trust_remote_code=True,
         )
+
         await self._ensure_collection()
 
     async def _ensure_collection(self):
+        """
+        Create collection if it does not exist.
+        """
+
         collections = self.client.get_collections().collections
         existing = [c.name for c in collections]
 
         if self.collection_name not in existing:
+            logger.info(f"Creating collection: {self.collection_name}")
+
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=qmodels.VectorParams(
@@ -39,23 +64,70 @@ class QdrantStore:
                     distance=qmodels.Distance.COSINE,
                 ),
             )
+
             self._create_payload_indexes()
-            logger.info(f"Created collection: {self.collection_name}")
+
+            logger.success(f"Collection created: {self.collection_name}")
+
         else:
-            logger.info(f"Collection exists: {self.collection_name}")
+            logger.info(f"Collection already exists: {self.collection_name}")
 
     def _create_payload_indexes(self):
-        for field in ["tipo_norma", "norma_id", "subsector", "enfoque", "vigente", "sector", "renewable_incentive"]:
-            self.client.create_payload_index(
-                collection_name=self.collection_name,
-                field_name=field,
-                field_type=qmodels.PayloadSchemaType.KEYWORD,
-            )
+        """
+        Create payload indexes for filtering.
+        """
+
+        keyword_fields = [
+            "tipo_norma",
+            "norma_id",
+            "subsector",
+            "enfoque",
+            "sector",
+        ]
+
+        bool_fields = [
+            "vigente",
+            "renewable_incentive",
+        ]
+
+        for field in keyword_fields:
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field,
+                    field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                )
+
+                logger.info(f"Created keyword index: {field}")
+
+            except Exception as e:
+                logger.warning(f"Index already exists or failed for {field}: {e}")
+
+        for field in bool_fields:
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field,
+                    field_schema=qmodels.PayloadSchemaType.BOOL,
+                )
+
+                logger.info(f"Created bool index: {field}")
+
+            except Exception as e:
+                logger.warning(f"Index already exists or failed for {field}: {e}")
 
     def _unit_to_point(self, unit: LegalUnit) -> PointStruct:
-        embedding = self.embedder.encode(unit.texto).tolist()
+        """
+        Convert LegalUnit to Qdrant PointStruct.
+        """
+
+        embedding = self.embedder.encode(
+            unit.texto,
+            normalize_embeddings=True,
+        ).tolist()
+
         return PointStruct(
-            id=hash(unit.id),
+            id=abs(hash(unit.id)) % (10**12),
             vector=embedding,
             payload={
                 "id": unit.id,
@@ -74,26 +146,48 @@ class QdrantStore:
         )
 
     async def upsert_units(self, units: List[LegalUnit]) -> int:
+        """
+        Insert or update legal units in Qdrant.
+        """
+
         if not self.client or not self.embedder:
             raise RuntimeError("QdrantStore not initialized")
 
-        points = [self._unit_to_point(u) for u in units]
-        batch_size = 100
+        points = [self._unit_to_point(unit) for unit in units]
+
+        batch_size = 32
+
         for i in range(0, len(points), batch_size):
             batch = points[i:i + batch_size]
+
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=batch,
                 wait=True,
             )
-        logger.info(f"Upserted {len(points)} points to Qdrant")
+
+            logger.info(
+                f"Uploaded batch {i // batch_size + 1} "
+                f"({len(batch)} points)"
+            )
+
+        logger.success(f"Upserted {len(points)} points to Qdrant")
+
         return len(points)
 
-    def build_filter(self, metadata_filter: Optional[Dict[str, Any]] = None) -> Optional[Filter]:
+    def build_filter(
+        self,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Filter]:
+        """
+        Build Qdrant metadata filter.
+        """
+
         if not metadata_filter:
             return None
 
         conditions: List[FieldCondition] = []
+
         field_mapping = {
             "subsector": "subsector",
             "tipo_norma": "tipo_norma",
@@ -105,15 +199,18 @@ class QdrantStore:
         }
 
         for key, field in field_mapping.items():
-            if key in metadata_filter and metadata_filter[key] is not None:
+            value = metadata_filter.get(key)
+
+            if value is not None:
                 conditions.append(
                     FieldCondition(
                         key=field,
-                        match=MatchValue(value=metadata_filter[key]),
+                        match=MatchValue(value=value),
                     )
                 )
 
-        if "risk_flags" in metadata_filter and metadata_filter["risk_flags"]:
+        # risk flags
+        if metadata_filter.get("risk_flags"):
             for flag in metadata_filter["risk_flags"]:
                 conditions.append(
                     FieldCondition(
@@ -124,12 +221,24 @@ class QdrantStore:
 
         return Filter(must=conditions) if conditions else None
 
-    async def search(self, query: str, metadata_filter: Optional[Dict[str, Any]] = None,
-                     top_k: int = 10) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic search in Qdrant.
+        """
+
         if not self.client or not self.embedder:
             raise RuntimeError("QdrantStore not initialized")
 
-        query_vector = self.embedder.encode(query).tolist()
+        query_vector = self.embedder.encode(
+            query,
+            normalize_embeddings=True,
+        ).tolist()
+
         qdrant_filter = self.build_filter(metadata_filter)
 
         results = self.client.search(
@@ -151,6 +260,10 @@ class QdrantStore:
         ]
 
     async def close(self):
+        """
+        Close Qdrant connection.
+        """
+
         if self.client:
             self.client.close()
             logger.info("Qdrant client closed")

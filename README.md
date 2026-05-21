@@ -72,6 +72,11 @@ A specialized Legal RAG (Retrieval-Augmented Generation) platform for analyzing 
 # Clone and enter directory
 cd lexenergy
 
+# Creat and activate virtual environment
+python3 -m venv venv
+
+source venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 

@@ -1,68 +1,114 @@
 import re
 from typing import List, Optional
-from app.models.legal_unit import LegalUnit
 
 
 class LegalTextNormalizer:
+
     @staticmethod
     def normalize_whitespace(text: str) -> str:
-        text = re.sub(r'\s+', ' ', text)
+        # No destruir estructura de párrafos
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n[ \t]+', '\n', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
         return text.strip()
 
     @staticmethod
     def normalize_articles(text: str) -> str:
-        text = re.sub(r'Art[°º]?\s*\.?\s*', 'Artículo ', text, flags=re.IGNORECASE)
-        text = re.sub(r'Articulo\s+', 'Artículo ', text, flags=re.IGNORECASE)
+        # FIX 1: evitar sobre-escritura agresiva de "Art"
+        text = re.sub(r'\bART\.?\s*', 'Artículo ', text, flags=re.IGNORECASE)
+
+        text = re.sub(
+            r'\bArticulo\b',
+            'Artículo',
+            text,
+            flags=re.IGNORECASE
+        )
+
+        # FIX CRÍTICO: arreglar corrupción "Artículo ículo"
+        text = re.sub(
+            r'Artículo\s+ículo',
+            'Artículo',
+            text,
+            flags=re.IGNORECASE
+        )
+
         return text
 
     @staticmethod
     def normalize_norm_ids(text: str) -> str:
         text = re.sub(r'Ley\s+N[°º]?\s*\.?\s*', 'Ley N° ', text, flags=re.IGNORECASE)
-        text = re.sub(r'D\.?S\.?\s*\.?\s*', 'Decreto Supremo ', text, flags=re.IGNORECASE)
-        text = re.sub(r'Ley\s+de\s+', 'Ley de ', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bD\.?\s*S\.?\b', 'Decreto Supremo', text, flags=re.IGNORECASE)
         return text
 
     @staticmethod
     def remove_headers_footers(text: str) -> str:
-        lines = text.split('\n')
+        lines = text.splitlines()
         cleaned = []
+
         for line in lines:
-            stripped = line.strip()
-            if not stripped:
+            s = line.strip()
+
+            if not s:
                 continue
-            if re.match(r'^\d+\s*$', stripped):
+
+            # páginas
+            if re.fullmatch(r'\d+', s):
                 continue
-            if re.match(r'^-\s*\d+\s*-$', stripped):
+
+            # "- 3 -"
+            if re.fullmatch(r'-\s*\d+\s*-', s):
                 continue
-            cleaned.append(stripped)
+
+            cleaned.append(s)
+
         return '\n'.join(cleaned)
 
     @staticmethod
     def normalize(text: str) -> str:
         text = LegalTextNormalizer.remove_headers_footers(text)
-        text = LegalTextNormalizer.normalize_articles(text)
+
+        # orden IMPORTANTE: primero IDs, luego artículos
         text = LegalTextNormalizer.normalize_norm_ids(text)
+        text = LegalTextNormalizer.normalize_articles(text)
+
         text = LegalTextNormalizer.normalize_whitespace(text)
+
         return text
 
     @staticmethod
     def extract_title(text: str) -> Optional[str]:
-        lines = text.strip().split('\n')
-        for line in lines[:5]:
-            stripped = line.strip()
-            if stripped and len(stripped) > 10 and len(stripped) < 200:
-                return stripped
+        lines = text.splitlines()
+
+        for line in lines[:10]:
+            s = line.strip()
+            if 10 < len(s) < 200:
+                return s
+
         return None
 
     @staticmethod
     def split_into_articles(text: str) -> List[str]:
-        article_pattern = r'(Artículo\s+\d+[°º]?(?:\s*bis|\s*ter|\s*quater)?[\.\s])'
-        parts = re.split(article_pattern, text, flags=re.IGNORECASE)
-        if len(parts) <= 1:
+
+        # FIX IMPORTANTE: más tolerante a formatos reales legales bolivianos
+        pattern = re.compile(
+            r'(Artículo\s+(?:\d+|Primero|Segundo|Tercero|Cuarto|Quinto))',
+            flags=re.IGNORECASE
+        )
+
+        matches = list(pattern.finditer(text))
+
+        if not matches:
             return [text.strip()]
-        articles: List[str] = []
-        for i in range(1, len(parts), 2):
-            article_header = parts[i].strip()
-            article_body = parts[i + 1].strip() if i + 1 < len(parts) else ""
-            articles.append(f"{article_header} {article_body}".strip())
+
+        articles = []
+
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+            chunk = text[start:end].strip()
+
+            if len(chunk) > 30:  # evita basura
+                articles.append(chunk)
+
         return articles
