@@ -1,0 +1,46 @@
+[project]
+name = "lexenergy-bolivia"
+version = "1.0.0"
+description = "Legal RAG Platform for Renewable Energy Investments in Bolivia"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "langchain>=0.3.0",
+    "langchain-qdrant>=0.2.0",
+    "qdrant-client>=1.13.0",
+    "sentence-transformers>=3.4.0",
+    "rank-bm25>=0.2.0",
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.28.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+lexenergy-api = "app.main:start"
+lexenergy-ingest = "ingestion.pipeline:run_ingestion"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as async",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

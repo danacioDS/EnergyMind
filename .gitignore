@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+
+# Virtual env
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Qdrant
+qdrant_storage/
+
+# Models
+models/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker
+*.tar
+
+# Environment variables
+.env
+
+# Ollama
+ollama/
+
+# Vector cache
+cache/
