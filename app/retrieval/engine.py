@@ -1,9 +1,13 @@
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from loguru import logger
 
 from app.config import settings
 from app.retrieval.hybrid import HybridRetriever
 from vectorstore.qdrant_client import QdrantStore
+
+
+BM25_INDEX_PATH = Path(settings.base_dir) / "cache" / "bm25_index.pkl"
 
 
 class RetrievalEngine:
@@ -13,7 +17,10 @@ class RetrievalEngine:
 
     async def initialize(self):
         await self.qdrant.initialize()
-        logger.info("RetrievalEngine initialized")
+        if self.hybrid.bm25.load(BM25_INDEX_PATH):
+            logger.info("RetrievalEngine initialized (BM25 from cache)")
+        else:
+            logger.info("RetrievalEngine initialized (no BM25 cache)")
 
     async def retrieve(self, query: str,
                        metadata_filter: Optional[Dict[str, Any]] = None,
@@ -35,9 +42,10 @@ class RetrievalEngine:
                 top_k=top_k * 2,
             )
 
-        # Build BM25 index from Qdrant results
-        if qdrant_results:
+        # Build BM25 index from Qdrant results if not cached
+        if qdrant_results and not self.hybrid.bm25.index:
             self.hybrid.bm25.build_index(qdrant_results)
+            self.hybrid.bm25.save(BM25_INDEX_PATH)
 
         results_reranked, filter_used = await self.hybrid.retrieve(query, metadata_filter)
 

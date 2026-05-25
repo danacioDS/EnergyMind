@@ -35,7 +35,7 @@ qdrant_storage/
 # =========================
 # Models (HuggingFace / SentenceTransformers cache local)
 # =========================
-models/
+/models/
 *.bin
 *.safetensors
 

@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from loguru import logger
 import numpy as np
@@ -8,6 +9,18 @@ from app.retrieval.bm25 import BM25Retriever
 from app.retrieval.dense import DenseRetriever
 from app.retrieval.reranker import Reranker
 
+# Patterns that suggest exact legal code lookup → bias towards BM25 (keyword match)
+_CODE_PATTERNS = re.compile(
+    r"(artículo|art\.?\s*\d+|ley\s*\d+|decreto\s*\d+|norma\s*\d+|l\s*\.?\s*n[°º]?\s*\d+)",
+    re.IGNORECASE,
+)
+
+# Patterns that suggest conceptual/abstract query → bias towards dense (semantic match)
+_CONCEPT_PATTERNS = re.compile(
+    r"(riesgo|qué\s*es|definición|concepto|qué\s*significa|diferencia|comparación)",
+    re.IGNORECASE,
+)
+
 
 class HybridRetriever:
     def __init__(self):
@@ -15,6 +28,13 @@ class HybridRetriever:
         self.dense = DenseRetriever()
         self.reranker = Reranker()
         self.metadata_filter = MetadataFilter()
+
+    def _infer_alpha(self, query: str) -> float:
+        if _CODE_PATTERNS.search(query):
+            return 0.7
+        if _CONCEPT_PATTERNS.search(query):
+            return 0.3
+        return settings.hybrid_alpha
 
     def _normalize_scores(self, items: List[Dict[str, Any]], score_key: str) -> List[Dict[str, Any]]:
         scores = np.array([item.get(score_key, 0) for item in items])
@@ -91,9 +111,10 @@ class HybridRetriever:
         else:
             dense_results = []
 
-        # Phase 4: Hybrid fusion
-        logger.info("Phase 3: Hybrid fusion")
-        hybrid_results = self._fusion(bm25_results, dense_results)
+        # Phase 4: Hybrid fusion with adaptive alpha
+        alpha = self._infer_alpha(query)
+        logger.info(f"Phase 3: Hybrid fusion (alpha={alpha})")
+        hybrid_results = self._fusion(bm25_results, dense_results, alpha=alpha)
         hybrid_results = hybrid_results[:top_k]
 
         # Phase 5: Reranking

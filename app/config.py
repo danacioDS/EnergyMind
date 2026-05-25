@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     dense_top_k: int = 20
     final_top_k: int = 5
     reranker_top_k: int = 5
+    hybrid_alpha: float = 0.5
 
     # =========================================================
     # METHODS

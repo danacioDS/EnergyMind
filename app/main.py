@@ -1,10 +1,12 @@
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from loguru import logger
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.api.routes import router
@@ -14,22 +16,33 @@ from app.services.query_service import QueryService
 query_service: QueryService = None
 
 
+class CorrelationIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())[:8]
+        with logger.contextualize(correlation_id=cid):
+            request.state.correlation_id = cid
+            response = await call_next(request)
+            response.headers["X-Correlation-ID"] = cid
+            return response
+
+
 def setup_logging():
     log_format = settings.log_format
     log_level = settings.log_level
 
     logger.remove()
+    logger.configure(extra={"correlation_id": "--------"})
     if log_format == "json":
         logger.add(
             sys.stdout,
-            format="{time} | {level} | {message}",
+            format="{time} | {level} | {extra[correlation_id]} | {message}",
             level=log_level,
             serialize=True,
         )
     else:
         logger.add(
             sys.stdout,
-            format="<green>{time:HH:mm:ss}</green> | <level>{level:8}</level> | <cyan>{message}</cyan>",
+            format="<green>{time:HH:mm:ss}</green> | <level>{level:8}</level> | <cyan>{extra[correlation_id]: >8}</cyan> | {message}",
             level=log_level,
             colorize=True,
         )
@@ -73,6 +86,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(CorrelationIDMiddleware)
 
 app.include_router(router)
 

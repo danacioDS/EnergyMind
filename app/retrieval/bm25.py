@@ -1,3 +1,5 @@
+import pickle
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from loguru import logger
 import jieba
@@ -25,6 +27,28 @@ class BM25Retriever:
         ]
         self.index = BM25Okapi(self.tokenized_corpus)
         logger.info(f"Built BM25 index with {len(documents)} documents")
+
+    def save(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump({
+                "index": self.index,
+                "documents": self.documents,
+                "tokenized_corpus": self.tokenized_corpus,
+            }, f)
+        logger.info(f"BM25 index saved to {path}")
+
+    def load(self, path: Path) -> bool:
+        if not path.exists():
+            logger.info(f"No persisted BM25 index at {path}")
+            return False
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        self.index = data["index"]
+        self.documents = data["documents"]
+        self.tokenized_corpus = data["tokenized_corpus"]
+        logger.info(f"BM25 index loaded from {path} ({len(self.documents)} docs)")
+        return True
 
     async def search(self, query: str, top_k: int = settings.bm25_top_k) -> List[Dict[str, Any]]:
         if not self.index:

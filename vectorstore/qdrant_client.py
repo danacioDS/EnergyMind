@@ -1,3 +1,4 @@
+import uuid
 from typing import List, Optional, Dict, Any
 from loguru import logger
 from qdrant_client import QdrantClient
@@ -116,18 +117,21 @@ class QdrantStore:
             except Exception as e:
                 logger.warning(f"Index already exists or failed for {field}: {e}")
 
-    def _unit_to_point(self, unit: LegalUnit) -> PointStruct:
+    def _unit_to_point(self, unit: LegalUnit, embedding: Optional[List[float]] = None) -> PointStruct:
         """
         Convert LegalUnit to Qdrant PointStruct.
+
+        Accepts an optional pre-computed embedding to support batched encoding.
         """
 
-        embedding = self.embedder.encode(
-            unit.texto,
-            normalize_embeddings=True,
-        ).tolist()
+        if embedding is None:
+            embedding = self.embedder.encode(
+                unit.texto,
+                normalize_embeddings=True,
+            ).tolist()
 
         return PointStruct(
-            id=abs(hash(unit.id)) % (10**12),
+            id=uuid.uuid5(uuid.NAMESPACE_DNS, unit.id),
             vector=embedding,
             payload={
                 "id": unit.id,
@@ -148,12 +152,24 @@ class QdrantStore:
     async def upsert_units(self, units: List[LegalUnit]) -> int:
         """
         Insert or update legal units in Qdrant.
+
+        Encodes all texts in a single batched call (~5-10x faster than one-at-a-time).
         """
 
         if not self.client or not self.embedder:
             raise RuntimeError("QdrantStore not initialized")
 
-        points = [self._unit_to_point(unit) for unit in units]
+        texts = [unit.texto for unit in units]
+        embeddings = self.embedder.encode(
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+        ).tolist()
+
+        points = [
+            self._unit_to_point(unit, embedding)
+            for unit, embedding in zip(units, embeddings)
+        ]
 
         batch_size = 32
 
