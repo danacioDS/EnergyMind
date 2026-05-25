@@ -3,7 +3,7 @@ from loguru import logger
 
 
 class ContextBuilder:
-    MAX_CONTEXT_LENGTH = 8000
+    MAX_CONTEXT_LENGTH = 32000
 
     @staticmethod
     def build_context(documents: List[Dict[str, Any]]) -> str:

@@ -15,7 +15,7 @@ class TestMetadataFilter:
 
     def test_infer_investment_focus(self):
         result = MetadataFilter.infer_from_query(
-            "Can foreign companies invest in Bolivia?"
+            "Can foreign companies investment in Bolivia?"
         )
         assert result.get("enfoque") == "Inversion"
 
@@ -29,7 +29,7 @@ class TestMetadataFilter:
 
     def test_infer_constitutional_query(self):
         result = MetadataFilter.infer_from_query(
-            "What does the constitution say about energy?"
+            "What does the constitutional say about energy?"
         )
         assert result.get("tipo_norma") == "Constitucion"
 

@@ -1,41 +1,60 @@
+# =========================
 # Python
+# =========================
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.db
 
 # Virtual env
 venv/
+.venv/
 .env/
 
+# =========================
 # IDE
+# =========================
 .vscode/
 .idea/
 
+# =========================
 # Logs
+# =========================
 *.log
 
+# =========================
 # OS
+# =========================
 .DS_Store
 
-# Qdrant
+# =========================
+# Qdrant (local storage)
+# =========================
 qdrant_storage/
 
-# Models
+# =========================
+# Models (HuggingFace / SentenceTransformers cache local)
+# =========================
 models/
+*.bin
+*.safetensors
 
+# HuggingFace cache (MUY IMPORTANTE)
+~/.cache/huggingface/
+.cache/
+
+# =========================
 # Jupyter
+# =========================
 .ipynb_checkpoints/
 
-# Docker
+# =========================
+# Docker / backups
+# =========================
 *.tar
+*.tar.gz
 
-# Environment variables
-.env
-
-# Ollama
-ollama/
-
-# Vector cache
+# =========================
+# Vector / runtime cache
+# =========================
 cache/

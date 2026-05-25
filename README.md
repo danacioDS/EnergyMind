@@ -111,7 +111,7 @@ curl -X POST http://localhost:8000/api/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "Can a foreign company build a solar plant in Bolivia?",
-    "subsector": "Solar"
+    "subsector": "Solar", "Eólico", "Hidroeléctrico", "Geotérmico", "Biomasa"
   }'
 ```
 

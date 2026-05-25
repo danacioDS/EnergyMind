@@ -12,7 +12,9 @@ from app.prompts.legal_prompts import (
     LEGAL_RESPONSE_TEMPLATE,
     EXTRACTIVE_QA_PROMPT,
     RISK_ANALYSIS_PROMPT,
+    STRUCTURED_LEGAL_TEMPLATE,
 )
+from app.models.schemas import StructuredLegalResponse
 
 
 class LegalChain:
@@ -20,6 +22,7 @@ class LegalChain:
         self.llm = self._init_llm()
         self.qa_chain = self._build_qa_chain()
         self.risk_chain = self._build_risk_chain()
+        self.structured_chain = self._build_structured_chain()
 
     def _init_llm(self):
         if settings.llm_provider == "ollama":
@@ -53,6 +56,15 @@ class LegalChain:
         ])
         return prompt | self.llm | StrOutputParser()
 
+    def _build_structured_chain(self):
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", LEGAL_SYSTEM_PROMPT),
+            ("human", STRUCTURED_LEGAL_TEMPLATE),
+        ])
+        method = "json_mode" if settings.llm_provider == "ollama" else None
+        structured_llm = self.llm.with_structured_output(StructuredLegalResponse, method=method)
+        return prompt | structured_llm
+
     async def answer(self, question: str, context: str) -> str:
         logger.info(f"Generating answer for: {question[:80]}...")
         response = await self.qa_chain.ainvoke({
@@ -64,6 +76,14 @@ class LegalChain:
     async def analyze_risk(self, question: str, context: str) -> str:
         logger.info("Running risk analysis...")
         response = await self.risk_chain.ainvoke({
+            "question": question,
+            "context": context,
+        })
+        return response
+
+    async def structured_answer(self, question: str, context: str) -> StructuredLegalResponse:
+        logger.info(f"Generating structured answer for: {question[:80]}...")
+        response = await self.structured_chain.ainvoke({
             "question": question,
             "context": context,
         })

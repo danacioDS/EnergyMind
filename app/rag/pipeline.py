@@ -12,6 +12,7 @@ from app.models.schemas import (
     RiskMatrix,
     IncentiveInfo,
     LegalCitation,
+    StructuredLegalResponse,
 )
 
 
@@ -55,7 +56,7 @@ class RAGPipeline:
                     direct_conclusion="Insufficient information in the specialized renewable energy legal corpus.",
                     regulatory_analysis="No relevant legal documents were found in the corpus.",
                     risk_matrix=RiskMatrix(),
-                    incentives_detected=IncentiveInfo(detected=False),
+                    incentives_detected=IncentiveInfo(),
                     insufficient_context=True,
                 ),
                 processing_time_ms=processing_time,
@@ -64,28 +65,44 @@ class RAGPipeline:
         context = self.context_builder.build_context(documents)
         citations = self.context_builder.extract_citations(documents)
 
-        llm_response = await self.chain.answer(question, context)
+        structured = await self.chain.structured_answer(question, context)
 
-        risk_matrix = self._extract_risk_matrix(llm_response)
-        incentives = self._extract_incentives(llm_response, documents)
-
-        analysis = RegulatoryAnalysis(
-            direct_conclusion=self._extract_section(llm_response, "DIRECT CONCLUSION"),
-            regulatory_analysis=self._extract_section(llm_response, "REGULATORY ANALYSIS"),
-            legal_citations=[
-                LegalCitation(
-                    norma=c["norma"],
-                    articulo=c["articulo"],
-                    texto=c["texto"][:500],
-                    tipo_norma=c["tipo_norma"],
-                    risk_flags=c.get("risk_flags", []),
-                )
-                for c in citations
-            ],
-            risk_matrix=risk_matrix,
-            incentives_detected=incentives,
-            insufficient_context=False,
-        )
+        if structured.insufficient_context:
+            analysis = RegulatoryAnalysis(
+                direct_conclusion=str(structured.direct_conclusion or "Insufficient information in the specialized renewable energy legal corpus."),
+                regulatory_analysis=str(structured.regulatory_analysis or "The corpus does not contain sufficient legal context."),
+                legal_citations=[
+                    LegalCitation(
+                        norma=c["norma"],
+                        articulo=c["articulo"],
+                        texto=c["texto"][:500],
+                        tipo_norma=c["tipo_norma"],
+                        risk_flags=c.get("risk_flags", []),
+                    )
+                    for c in citations
+                ],
+                risk_matrix=structured.risk_matrix or RiskMatrix(),
+                incentives_detected=structured.incentives or IncentiveInfo(),
+                insufficient_context=True,
+            )
+        else:
+            analysis = RegulatoryAnalysis(
+                direct_conclusion=str(structured.direct_conclusion or ""),
+                regulatory_analysis=str(structured.regulatory_analysis or ""),
+                legal_citations=[
+                    LegalCitation(
+                        norma=c["norma"],
+                        articulo=c["articulo"],
+                        texto=c["texto"][:500],
+                        tipo_norma=c["tipo_norma"],
+                        risk_flags=c.get("risk_flags", []),
+                    )
+                    for c in citations
+                ],
+                risk_matrix=structured.risk_matrix or RiskMatrix(),
+                incentives_detected=structured.incentives or IncentiveInfo(),
+                insufficient_context=False,
+            )
 
         processing_time = int((time.time() - start_time) * 1000)
 
@@ -148,7 +165,7 @@ class RAGPipeline:
                     articles=[payload.get("articulo", "")],
                 )
 
-        return IncentiveInfo(detected=False)
+        return IncentiveInfo()
 
     async def close(self):
         await self.retrieval.close()

@@ -22,6 +22,13 @@ class AgentState(TypedDict):
     citations: List[Dict[str, Any]]
 
 
+REFINE_PROMPT = """The following legal question about Bolivian renewable energy did not yield sufficient results.
+Rephrase it to be more specific using Spanish legal terminology for broader search coverage.
+
+Original: {question}
+Rephrased:"""
+
+
 class LegalAgentGraph:
     def __init__(self):
         self.chain = LegalChain()
@@ -44,11 +51,7 @@ class LegalAgentGraph:
 
         workflow.set_entry_point("retrieve")
 
-        workflow.add_conditional_edges(
-            "retrieve",
-            self._check_documents,
-            {"analyze": "analyze", "finalize": "finalize"},
-        )
+        workflow.add_edge("retrieve", "analyze")
 
         workflow.add_conditional_edges(
             "analyze",
@@ -57,7 +60,7 @@ class LegalAgentGraph:
         )
 
         workflow.add_edge("risk_assess", "finalize")
-        workflow.add_edge("refine", "analyze")
+        workflow.add_edge("refine", "retrieve")
         workflow.add_edge("finalize", END)
 
         return workflow.compile()
@@ -81,12 +84,21 @@ class LegalAgentGraph:
 
     async def _analyze_node(self, state: AgentState) -> AgentState:
         logger.info("Agent analyze")
+        if not state.get("documents"):
+            state["needs_refinement"] = state.get("iteration", 0) < 3
+            return state
+
         context = self.context_builder.build_context(state["documents"])
         state["context"] = context
         state["citations"] = self.context_builder.extract_citations(state["documents"])
 
         analysis = await self.chain.answer(state["question"], context)
         state["analysis"] = analysis
+
+        if "Insufficient information" in analysis:
+            state["needs_refinement"] = state.get("iteration", 0) < 3
+        else:
+            state["needs_refinement"] = False
         return state
 
     async def _risk_assess_node(self, state: AgentState) -> AgentState:
@@ -96,10 +108,17 @@ class LegalAgentGraph:
         return state
 
     async def _refine_node(self, state: AgentState) -> AgentState:
-        logger.info("Agent refine - expanding query")
         state["iteration"] = state.get("iteration", 0) + 1
-        if state["iteration"] < 3:
-            state["needs_refinement"] = False
+        logger.info(f"Agent refine - expanding query (iter {state['iteration']})")
+
+        response = await self.chain.llm.ainvoke(
+            REFINE_PROMPT.format(question=state["question"])
+        )
+        state["question"] = str(response.content).strip()
+
+        state["needs_refinement"] = state["iteration"] < 3
+
+        logger.info(f"Refined question: {state['question'][:80]}")
         return state
 
     async def _finalize_node(self, state: AgentState) -> AgentState:
@@ -112,11 +131,6 @@ class LegalAgentGraph:
                 answer_parts.append("\n\n## RISK ANALYSIS\n" + state["risk_analysis"])
             state["final_answer"] = "\n".join(answer_parts)
         return state
-
-    def _check_documents(self, state: AgentState) -> Literal["analyze", "finalize"]:
-        if state["needs_refinement"]:
-            return "finalize"
-        return "analyze"
 
     def _check_refinement(self, state: AgentState) -> Literal["risk_assess", "refine"]:
         if state.get("needs_refinement", False) and state.get("iteration", 0) < 3:

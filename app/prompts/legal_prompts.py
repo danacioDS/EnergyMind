@@ -100,6 +100,29 @@ Proporciona tu respuesta en el siguiente formato estructurado:
 """
 
 
+STRUCTURED_LEGAL_TEMPLATE = """==================================================
+CONTEXTO LEGAL RECUPERADO
+==================================================
+
+{context}
+
+==================================================
+PREGUNTA DEL USUARIO
+==================================================
+
+{question}
+
+==================================================
+INSTRUCCIONES
+==================================================
+
+Analiza la pregunta utilizando EXCLUSIVAMENTE el contexto legal proporcionado arriba.
+Si el contexto no contiene suficiente información para responder, indica insufficient_context=true.
+Cada afirmación legal debe citar el artículo exacto y la norma específica.
+Identifica explícitamente cualquier incentivo renovable encontrado en el contexto.
+"""
+
+
 EXTRACTIVE_QA_PROMPT = """Based on the following legal context, answer the question precisely.
 
 Context:
