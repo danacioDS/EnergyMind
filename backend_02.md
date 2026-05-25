@@ -1,4 +1,4 @@
-# LexEnergy Bolivia — Improvements Transcript
+# LexEnergy Bolivia — Backend 02: Improvements
 
 ## Overview
 
