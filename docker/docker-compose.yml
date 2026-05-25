@@ -2,29 +2,49 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.13.2
     restart: unless-stopped
+
     ports:
       - "6333:6333"
       - "6334:6334"
+
     volumes:
       - qdrant_storage:/qdrant/storage
+
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
+
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis_data:/data
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+
 
   lexenergy-api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+
     restart: unless-stopped
+
     ports:
       - "8000:8000"
+
     volumes:
       - ../corpus:/app/corpus
       - ../logs:/app/logs
+
     env_file:
       - ../.env
 
@@ -34,27 +54,16 @@ services:
     environment:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       OLLAMA_BASE_URL: http://host.docker.internal:11434
 
     depends_on:
-      qdrant:
-        condition: service_healthy
+      - qdrant
+      - redis
 
-    command: >
-      sh -c "
-        uvicorn app.main:app
-        --host 0.0.0.0
-        --port 8000
-        --workers 4
-      "
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
 
 volumes:
   qdrant_storage:
