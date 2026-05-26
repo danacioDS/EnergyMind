@@ -58,3 +58,6 @@ qdrant_storage/
 # Vector / runtime cache
 # =========================
 cache/
+
+package-lock.json
+node_modules/

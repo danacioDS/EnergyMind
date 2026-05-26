@@ -131,7 +131,7 @@ class QdrantStore:
             ).tolist()
 
         return PointStruct(
-            id=uuid.uuid5(uuid.NAMESPACE_DNS, unit.id),
+            id=str(uuid.uuid5(uuid.NAMESPACE_DNS, unit.id)),
             vector=embedding,
             payload={
                 "id": unit.id,
@@ -159,6 +159,9 @@ class QdrantStore:
         if not self.client or not self.embedder:
             raise RuntimeError("QdrantStore not initialized")
 
+        total_units = len(units)
+        logger.info(f"Ingestion: preparing {total_units} points for Qdrant")
+
         texts = [unit.texto for unit in units]
         embeddings = self.embedder.encode(
             texts,
@@ -171,25 +174,37 @@ class QdrantStore:
             for unit, embedding in zip(units, embeddings)
         ]
 
+        # Validate all point IDs are str or int
+        for pt in points:
+            if not isinstance(pt.id, (str, int)):
+                raise TypeError(f"Point id must be str or int, got {type(pt.id).__name__}: {pt.id}")
+
+        logger.info(f"Ingestion: encoded {len(points)} points, starting batch upsert")
+
         batch_size = 32
+        total_inserted = 0
 
         for i in range(0, len(points), batch_size):
             batch = points[i:i + batch_size]
 
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=batch,
-                wait=True,
-            )
+            try:
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=batch,
+                    wait=True,
+                )
+                total_inserted += len(batch)
+                logger.info(
+                    f"Ingestion: batch {i // batch_size + 1}/{(len(points) - 1) // batch_size + 1} "
+                    f"({len(batch)} points, {total_inserted}/{total_units} total)"
+                )
+            except Exception as e:
+                logger.error(f"Ingestion: batch {i // batch_size + 1} FAILED: {e}")
+                raise
 
-            logger.info(
-                f"Uploaded batch {i // batch_size + 1} "
-                f"({len(batch)} points)"
-            )
+        logger.success(f"Ingestion complete: {total_inserted}/{total_units} points inserted into '{self.collection_name}'")
 
-        logger.success(f"Upserted {len(points)} points to Qdrant")
-
-        return len(points)
+        return total_inserted
 
     def build_filter(
         self,

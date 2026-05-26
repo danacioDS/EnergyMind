@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
+from app.config import settings
 from app.models.schemas import QueryRequest, QueryResponse
 from app.services.query_service import QueryService
 
@@ -126,9 +127,14 @@ async def query_legal_stream(request: QueryRequest, fastapi_request: Request, se
                 yield f"data: {json.dumps({'event': 'risk', 'matrix': response.answer.risk_matrix.model_dump()})}\n\n"
                 yield f"data: {json.dumps({'event': 'incentives', 'detected': response.answer.incentives_detected.model_dump()})}\n\n"
                 yield f"data: {json.dumps({'event': 'complete', 'processing_time_ms': response.processing_time_ms, 'sources': response.sources})}\n\n"
+            except ValueError as e:
+                logger.error(f"Streaming query failed (retrieval stage): {e}")
+                error_detail = str(e)
+                stage_hint = "retrieval" if any(kw in error_detail.lower() for kw in ["bm25", "dense", "rerank", "qdrant", "retrieval", "no documents", "empty"]) else "processing"
+                yield f"data: {json.dumps({'event': 'error', 'detail': error_detail, 'stage': stage_hint})}\n\n"
             except Exception as e:
                 logger.error(f"Streaming query failed: {e}")
-                yield f"data: {json.dumps({'event': 'error', 'detail': str(e)})}\n\n"
+                yield f"data: {json.dumps({'event': 'error', 'detail': str(e), 'stage': 'unknown'})}\n\n"
 
     return StreamingResponse(
         event_stream(),
