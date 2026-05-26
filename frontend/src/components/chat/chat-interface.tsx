@@ -146,39 +146,43 @@ export default function ChatInterface() {
         }))
         setIsLoading(false)
       } else {
-        const analysis = buildEmptyAnalysis()
-
         const cancel = streamQuery(
           request,
           {
             onEvent: guard.wrap((raw: StreamEvent) => {
               switch (raw.event) {
                 case "analysis":
-                  analysis.direct_conclusion = raw.direct_conclusion
                   updateLastMessage((msg) => ({
                     ...msg,
                     isLoading: false,
-                    analysis: { ...analysis },
+                    analysis: {
+                      ...(msg.analysis || buildEmptyAnalysis()),
+                      direct_conclusion: raw.direct_conclusion,
+                    },
                   }))
                   break
                 case "risk":
-                  analysis.risk_matrix = raw.matrix
                   updateLastMessage((msg) => ({
                     ...msg,
-                    analysis: { ...analysis },
+                    analysis: {
+                      ...(msg.analysis || buildEmptyAnalysis()),
+                      risk_matrix: raw.matrix,
+                    },
                   }))
                   break
                 case "incentives":
-                  analysis.incentives_detected = raw.detected
                   updateLastMessage((msg) => ({
                     ...msg,
-                    analysis: { ...analysis },
+                    analysis: {
+                      ...(msg.analysis || buildEmptyAnalysis()),
+                      incentives_detected: raw.detected,
+                    },
                   }))
                   break
                 case "complete":
                   updateLastMessage((msg) => ({
                     ...msg,
-                    analysis: { ...analysis },
+                    analysis: msg.analysis ? { ...msg.analysis } : buildEmptyAnalysis(),
                   }))
                   break
                 case "insufficient_context":
@@ -186,7 +190,7 @@ export default function ChatInterface() {
                     ...msg,
                     isLoading: false,
                     analysis: {
-                      ...analysis,
+                      ...(msg.analysis || buildEmptyAnalysis()),
                       insufficient_context: true,
                     },
                   }))
