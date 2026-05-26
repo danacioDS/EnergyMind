@@ -65,6 +65,23 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 
 
+  lexenergy-frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      API_URL: http://lexenergy-api:8000
+
+    depends_on:
+      - lexenergy-api
+
+
 volumes:
   qdrant_storage:
   redis_data:
