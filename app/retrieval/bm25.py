@@ -1,3 +1,4 @@
+import asyncio
 import pickle
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -56,7 +57,7 @@ class BM25Retriever:
             return []
 
         tokenized_query = self._tokenize(query)
-        scores = self.index.get_scores(tokenized_query)
+        scores = await asyncio.to_thread(self.index.get_scores, tokenized_query)
 
         scored = list(zip(self.documents, scores))
         scored.sort(key=lambda x: x[1], reverse=True)

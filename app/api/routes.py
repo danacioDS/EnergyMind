@@ -138,5 +138,6 @@ async def query_legal_stream(request: QueryRequest, fastapi_request: Request, se
             "X-Correlation-ID": cid or "",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )

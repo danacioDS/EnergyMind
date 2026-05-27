@@ -23,7 +23,7 @@ class RetrievalEngine:
             logger.info("Building BM25 index from full Qdrant corpus...")
             all_docs = await self.qdrant.scroll_all()
             if all_docs:
-                self.hybrid.bm25.build_index(all_docs)
+                await asyncio.to_thread(self.hybrid.bm25.build_index, all_docs)
                 self.hybrid.bm25.save(BM25_INDEX_PATH)
                 logger.info(f"BM25 index built from {len(all_docs)} documents")
             else:

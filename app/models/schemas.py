@@ -48,7 +48,7 @@ class StructuredLegalResponse(BaseModel):
     direct_conclusion: str = Field(description="Direct 2-3 sentence answer citing specific articles")
     regulatory_analysis: str = Field(description="Detailed 3-5 paragraph regulatory analysis with citations")
     risk_matrix: RiskMatrix = Field(description="Risk assessment matrix")
-    incentives: IncentiveInfo = Field(description="Detected renewable energy incentives")
+    incentives_detected: IncentiveInfo = Field(description="Detected renewable energy incentives")
     insufficient_context: bool = False
 
 

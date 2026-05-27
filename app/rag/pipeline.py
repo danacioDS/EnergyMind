@@ -82,7 +82,7 @@ class RAGPipeline:
                     for c in citations
                 ],
                 risk_matrix=structured.risk_matrix or RiskMatrix(),
-                incentives_detected=structured.incentives or IncentiveInfo(),
+                incentives_detected=structured.incentives_detected or IncentiveInfo(),
                 insufficient_context=True,
             )
         else:
@@ -100,7 +100,7 @@ class RAGPipeline:
                     for c in citations
                 ],
                 risk_matrix=structured.risk_matrix or RiskMatrix(),
-                incentives_detected=structured.incentives or IncentiveInfo(),
+                incentives_detected=structured.incentives_detected or IncentiveInfo(),
                 insufficient_context=False,
             )
 

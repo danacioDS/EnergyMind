@@ -61,6 +61,8 @@ class QueryService:
         if not self.pipeline or not self.agent:
             raise RuntimeError("QueryService not initialized")
 
+        start_time = time.time()
+
         try:
             cached = await get_cached(request.question, request.subsector)
             if cached is not None:
@@ -87,8 +89,9 @@ class QueryService:
             yield stream.emit("retrieval_complete", {"source_count": len(documents)})
 
             if not documents:
+                processing_time_ms = int((time.time() - start_time) * 1000)
                 yield stream.emit("insufficient_context", {})
-                yield stream.emit("complete", {"sources": []})
+                yield stream.emit("complete", {"processing_time_ms": processing_time_ms, "sources": []})
                 return
 
             context = self.pipeline.context_builder.build_context(documents)
@@ -98,7 +101,7 @@ class QueryService:
 
             yield stream.emit("analysis", {"direct_conclusion": structured.direct_conclusion[:500]})
             yield stream.emit("risk", {"matrix": structured.risk_matrix.model_dump()})
-            yield stream.emit("incentives", {"detected": structured.incentives.model_dump()})
+            yield stream.emit("incentives", {"detected": structured.incentives_detected.model_dump()})
 
             citation_data = [
                 {
@@ -111,7 +114,8 @@ class QueryService:
                 for c in citations
             ]
             yield stream.emit("citations", {"citations": citation_data})
-            yield stream.emit("complete", {"sources": [d.get("id", "") for d in documents]})
+            processing_time_ms = int((time.time() - start_time) * 1000)
+            yield stream.emit("complete", {"processing_time_ms": processing_time_ms, "sources": [d.get("id", "") for d in documents]})
 
         except Exception as e:
             logger.error(f"Streaming query failed: {e}")
@@ -158,7 +162,7 @@ class QueryService:
                     for c in citations
                 ],
                 risk_matrix=sr.risk_matrix or RiskMatrix(),
-                incentives_detected=sr.incentives or IncentiveInfo(),
+                incentives_detected=sr.incentives_detected or IncentiveInfo(),
                 insufficient_context=sr.insufficient_context,
             )
         else:
