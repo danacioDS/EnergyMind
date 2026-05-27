@@ -1,87 +1,73 @@
-Aquí tienes una versión **más profesional, más clara y lista para GitHub**, con mejor estructura, redacción consistente y enfoque más “product-grade”.
-
----
-
 # 📘 LexEnergy Bolivia
 
-LexEnergy Bolivia is a specialized **Legal RAG (Retrieval-Augmented Generation) platform** designed to analyze Bolivian legislation related to renewable energy investment.
-
-It combines **FastAPI, LangChain/LangGraph, Qdrant, and hybrid retrieval (BM25 + dense embeddings + reranking)** to deliver structured legal reasoning over national regulatory frameworks.
+LexEnergy Bolivia is a specialized **Legal RAG (Retrieval-Augmented Generation) platform** that analyzes Bolivian legislation related to renewable energy investment. It combines **FastAPI, LangChain/LangGraph, Qdrant, and hybrid retrieval (BM25 + dense embeddings + cross-encoder reranking)** to deliver structured legal reasoning over national regulatory frameworks.
 
 ---
 
 ## 🧠 Architecture
 
 ```
-                    ┌─────────────┐
-                    │  FastAPI     │
-                    │  API Layer   │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │ QueryService │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │ RAGPipeline  │
-                    └──────┬──────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-┌───────▼──────┐  ┌───────▼──────┐  ┌───────▼────────┐
-│ Retrieval     │  │ Prompt       │  │ LangGraph      │
-│ Engine        │  │ Engine       │  │ Agent          │
-└───────┬──────┘  └──────────────┘  └────────────────┘
-        │
-┌───────┼──────────────┐
-│       │              │
-▼       ▼              ▼
-BM25  Dense        Reranker
-│     (BGE)        (Cross/BGE)
-└───────┬──────────────┘
-        │
-   ┌────▼────┐
-   │ Qdrant  │
-   │ VectorDB│
-   └─────────┘
+                        ┌─────────────┐
+                        │  FastAPI     │
+                        │  API Layer   │
+                        └──────┬──────┘
+                               │
+                        ┌──────▼──────┐
+                        │ QueryService │
+                        │  + Redis     │
+                        │  + SSE       │
+                        └──────┬──────┘
+                               │
+                    ┌──────────┼──────────┐
+                    │          │          │
+            ┌───────▼──────┐  │  ┌───────▼────────┐
+            │ RAGPipeline   │  │  │ LangGraph      │
+            │ (no agent)    │  │  │ Agent          │
+            └───────┬──────┘  │  └────────────────┘
+                    │         │
+            ┌───────▼──────┐  │
+            │ Retrieval    │  │
+            │ Engine       │  │
+            └───────┬──────┘  │
+                    │         │
+         ┌──────────┼──────────┘
+         │          │
+    ┌────▼────┐ ┌───▼────┐
+    │  BM25   │ │ Qdrant │
+    │ (full   │ │ (dense)│
+    │ corpus) │ └───┬────┘
+    └────┬────┘     │
+         └────┬─────┘
+              ▼
+        ┌──────────┐
+        │Reranker  │
+        │(BGE-cross)│
+        └──────────┘
 ```
 
 ---
 
 ## 🔎 Retrieval Pipeline
 
-The system follows a **multi-stage legal retrieval process**:
+Multi-stage retrieval executed per query:
 
-1. **Metadata Filtering**
-   Filters by subsector, norm type, and validity before semantic search.
+1. **Metadata Filtering** — filters by subsector, norm type, validity before search
+2. **BM25 + Dense (parallel)** — sparse keyword search over the full corpus runs concurrently with Qdrant vector search via `asyncio.gather()`. BM25 index is pre-built from all Qdrant documents at startup.
+3. **Hybrid Fusion** — score normalization + weighted fusion with adaptive alpha (code vs concept queries)
+4. **Cross-Encoder Reranking** — BAAI/bge-reranker-large refines the top candidates
+5. **Context Building** — retrieved articles formatted into LLM-ready context with metadata headers
 
-2. **BM25 Retrieval**
-   Sparse keyword-based retrieval for legal precision.
-
-3. **Dense Retrieval**
-   Embedding-based semantic search using **BAAI/bge-m3**.
-
-4. **Hybrid Fusion**
-   Combines BM25 + dense scores with normalization.
-
-5. **Reranking**
-   Cross-encoder reranking (BAAI reranker or fallback).
-
-6. **Context Builder**
-   Structures retrieved legal articles into LLM-ready context.
-
-7. **LLM Generation**
-   Uses Llama 3.1 / Mistral Nemo with legal-specific prompts.
+All CPU-bound BM25 operations (`get_scores`, `BM25Okapi`) are offloaded to a thread pool via `asyncio.to_thread()` to avoid blocking the event loop.
 
 ---
 
 ## ⚖️ Legal Corpus Coverage
 
-* 🇧🇴 Constitution of Bolivia (2009) — selected articles
-* ⚡ Ley de Electricidad N° 1604 (1994)
-* 📜 Ley N° 943 (amendments)
-* 🏗️ DS N° 5503 (2025) — Investment Regime
-* 🏛️ AETN administrative resolutions (scraped)
+- 🇧🇴 Constitution of Bolivia (2009) — selected articles
+- ⚡ Ley de Electricidad N° 1604 (1994)
+- 📜 Ley N° 943 (amendments)
+- 🏗️ DS N° 5503 (2025) — Investment Regime
+- 🏛️ AETN administrative resolutions (scraped)
 
 ---
 
@@ -89,9 +75,9 @@ The system follows a **multi-stage legal retrieval process**:
 
 ### Prerequisites
 
-* Python 3.11+
-* Docker (Qdrant + Redis)
-* Ollama (local LLM) or OpenAI API key
+- Python 3.11+
+- Docker (Qdrant + Redis)
+- Ollama (local LLM) or OpenAI API key
 
 ---
 
@@ -108,8 +94,8 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Start Qdrant
-docker compose -f docker/docker-compose.yml up -d qdrant
+# Start Qdrant + Redis
+docker compose -f docker/docker-compose.yml up -d qdrant redis
 
 # Configure environment
 cp .env.example .env
@@ -133,17 +119,18 @@ uvicorn app.main:app --reload
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Services included:
+Services:
 
-* Qdrant (vector database)
-* Redis (cache / queue)
-* LexEnergy API (FastAPI)
+- **Qdrant** — vector database (port 6333)
+- **Redis** — query response cache (port 6379)
+- **LexEnergy API** — FastAPI backend (port 8000)
+- **LexEnergy Frontend** — Next.js 15 + shadcn/ui (port 3000)
 
 ---
 
 ## 📡 API Usage
 
-### 🔍 Query Endpoint
+### Query (blocking)
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/query \
@@ -154,16 +141,48 @@ curl -X POST http://localhost:8000/api/v1/query \
   }'
 ```
 
+### Query (streaming SSE)
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What incentives exist under DS 5503?",
+    "subsector": "Solar"
+  }'
+```
+
+SSE events are emitted progressively as each stage completes, with proper SSE `id`, `event`, and `data` fields. The `X-Accel-Buffering: no` header is set for nginx compatibility.
+
+### Agent mode (LangGraph refinement loop)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Compare solar vs wind investment risks",
+    "use_agent": true
+  }'
+```
+
+### Health check
+
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
 ---
 
-### 📤 Response Format
+## 📤 Response Format
+
+### Blocking response
 
 ```json
 {
   "question": "...",
   "answer": {
-    "direct_conclusion": "...",
-    "regulatory_analysis": "...",
+    "direct_conclusion": "2-3 sentence answer citing specific articles",
+    "regulatory_analysis": "Detailed 3-5 paragraph analysis",
     "legal_citations": [
       {
         "norma": "Ley 1604",
@@ -174,20 +193,39 @@ curl -X POST http://localhost:8000/api/v1/query \
       }
     ],
     "risk_matrix": {
+      "ideological_framework": "Mixed",
       "constitutional_conflict_risk": "Medium",
       "nationalization_risk": "Medium-High",
-      "regulatory_instability": "High"
+      "regulatory_instability": "High",
+      "legal_ambiguity": "Medium",
+      "arbitration_protection": "Limited"
     },
     "incentives_detected": {
       "detected": true,
       "type": "Tax Incentives",
+      "articles": [],
       "description": "Custom duty exemptions and accelerated depreciation"
-    }
+    },
+    "insufficient_context": false
   },
   "sources": ["Ley_1604_art_2_0", "DS_5503_art_3_0"],
-  "processing_time_ms": 1234
+  "processing_time_ms": 1234,
+  "cached": false
 }
 ```
+
+### SSE stream events
+
+| Event | Payload | When |
+|---|---|---|
+| `start` | `{correlation_id}` | Connection established |
+| `retrieval_complete` | `{source_count}` | Documents fetched |
+| `analysis` | `{direct_conclusion}` | LLM direct conclusion |
+| `risk` | `{matrix}` | Risk matrix available |
+| `incentives` | `{detected}` | Incentive info available |
+| `citations` | `{citations[]}` | Legal citations |
+| `complete` | `{processing_time_ms, sources}` | Response finished |
+| `error` | `{detail, stage}` | Error occurred |
 
 ---
 
@@ -196,24 +234,20 @@ curl -X POST http://localhost:8000/api/v1/query \
 ```
 lexenergy/
 ├── app/
-│   ├── api/            # FastAPI routes
-│   ├── rag/            # RAG pipeline + context builder
-│   ├── retrieval/      # BM25, dense, hybrid, reranker
-│   ├── prompts/        # Legal prompt templates
-│   ├── agents/         # LangGraph workflows
-│   ├── models/         # Pydantic schemas
-│   ├── services/       # Business logic layer
-│   ├── config.py
-│   └── main.py
+│   ├── api/              # FastAPI routes (blocking + SSE)
+│   ├── rag/              # RAG pipeline, context builder, LLM chain
+│   ├── retrieval/        # BM25, dense, hybrid fusion, reranker
+│   ├── agents/           # LangGraph agent with refinement loop
+│   ├── prompts/          # Legal prompt templates (Spanish)
+│   ├── models/           # Pydantic request/response schemas
+│   ├── services/         # QueryService, SSE manager, Redis cache, embedding singleton
+│   ├── config.py         # Pydantic Settings (env-based)
+│   └── main.py           # FastAPI app, CORS, lifespan
 │
-├── ingestion/          # Scrapers + normalization
-│   ├── lexivox/
-│   ├── aetn/
-│   ├── parsing/
-│   └── pipeline.py
-│
-├── corpus/             # Legal dataset
-├── vectorstore/        # Qdrant integration
+├── ingestion/            # Scrapers (LexiVox, AETN) + normalization pipeline
+├── corpus/               # Raw/processed/normalized legal dataset
+├── vectorstore/          # Qdrant client wrapper
+├── frontend/             # Next.js 15 + shadcn/ui
 ├── tests/
 └── docker/
 ```
@@ -222,30 +256,30 @@ lexenergy/
 
 ## 🧩 Key Design Decisions
 
-* **Legal-first chunking** → articles as atomic units (no naive splitting)
-* **Metadata-first retrieval** → filtering before vector search
-* **Constitutional hierarchy enforcement** → CPE Art. 410 priority layer
-* **Hybrid retrieval system** → BM25 + dense + reranker fusion
-* **Structured legal output** → conclusions + risks + citations always enforced
+- **Legal-first chunking** — articles as atomic units (no naive text splitting)
+- **Metadata-first retrieval** — filter before vector search reduces noise
+- **Constitutional hierarchy** — CPE Art. 410 priority enforced in prompts
+- **Hybrid retrieval** — BM25 (full corpus) + Qdrant dense in parallel, fused with adaptive alpha
+- **Structured legal output** — conclusions, risk matrix, incentives, and citations always enforced via Pydantic schema
+- **Singleton embedding model** — BGE-M3 loaded once and shared across QdrantStore and DenseRetriever
+- **SSE streaming** — progressive event emission (retrieval → LLM stages → complete) instead of batch
+- **Query caching** — Redis-backed SHA256 keyed cache with 1h TTL
+- **Agentic refinement** — optional LangGraph agent rephrases queries up to 3 iterations when results are insufficient
 
 ---
 
-## ⚠️ Legal Risk Model
+## ⚠️ Legal Risk Categories
 
-Detected risk categories:
-
-* Constitutional Conflict
-* Nationalization Risk
-* Regulatory Instability
-* Legal Ambiguity
-* Renewable Incentive Detection
-* Arbitration Protection Level
-* Private Investment Exposure
+- Constitutional Conflict
+- Nationalization Risk
+- Regulatory Instability
+- Legal Ambiguity
+- Arbitration Protection Level
+- Renewable Incentive Detection
+- Private Investment Exposure
 
 ---
 
 ## 📜 License
 
 MIT
-
-
