@@ -103,6 +103,31 @@ class HybridRetriever:
         fused = sorted(norm_map.values(), key=lambda x: x["hybrid_score"], reverse=True)
         return fused
 
+    async def retrieve_with_results(
+        self,
+        query: str,
+        bm25_results: List[Dict[str, Any]],
+        dense_results: List[Dict[str, Any]],
+        metadata_filter: Optional[Dict[str, Any]] = None,
+        top_k: int = settings.top_k,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        filter_dict = self.metadata_filter.infer_from_query(query, metadata_filter)
+
+        if not bm25_results and not dense_results:
+            return [], filter_dict
+
+        alpha = self._infer_alpha(query)
+        hybrid_results = self._fusion(bm25_results, dense_results, alpha=alpha)
+
+        if not hybrid_results:
+            return [], filter_dict
+
+        hybrid_results = hybrid_results[:top_k]
+
+        reranked = await self.reranker.rerank(query, hybrid_results, top_k=settings.final_top_k)
+        logger.info(f"Retrieved {len(reranked)} final results (with_results)")
+        return reranked, filter_dict
+
     async def retrieve(self, query: str,
                        metadata_filter: Optional[Dict[str, Any]] = None,
                        top_k: int = settings.top_k) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:

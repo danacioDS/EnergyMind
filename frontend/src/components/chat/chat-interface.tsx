@@ -13,7 +13,8 @@ import MessageBubble from "@/components/chat/message-bubble"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Send, PanelRightOpen } from "lucide-react"
+import { Send, PanelRightOpen, SlidersHorizontal } from "lucide-react"
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 
 interface Message {
   id: string
@@ -257,15 +258,24 @@ export default function ChatInterface() {
 
       <div className="flex flex-1 overflow-hidden">
         {filtersVisible && (
-          <>
-            <aside className="w-60 border-r bg-sidebar p-4 hidden md:block overflow-y-auto">
-              <FilterPanel filters={filters} onChange={setFilters} />
-            </aside>
-            <div className="md:hidden">
-              {/* mobile filter drawer would go here */}
-            </div>
-          </>
+          <aside className="w-60 border-r bg-sidebar p-4 hidden md:block overflow-y-auto">
+            <FilterPanel filters={filters} onChange={setFilters} />
+          </aside>
         )}
+
+        <div className="md:hidden">
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="icon" className="fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full shadow-lg">
+                <SlidersHorizontal className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left">
+              <h2 className="text-lg font-semibold mb-4">Filters</h2>
+              <FilterPanel filters={filters} onChange={setFilters} />
+            </SheetContent>
+          </Sheet>
+        </div>
 
         <main className="flex-1 flex flex-col min-w-0">
           <ScrollArea className="flex-1">

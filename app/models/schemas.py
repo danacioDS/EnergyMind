@@ -57,3 +57,4 @@ class QueryResponse(BaseModel):
     answer: RegulatoryAnalysis = Field(description="Structured regulatory analysis")
     sources: List[str] = Field(default_factory=list, description="Source document IDs used")
     processing_time_ms: Optional[int] = Field(default=None, description="Processing time in milliseconds")
+    cached: bool = Field(default=False, description="Whether the response was served from cache")

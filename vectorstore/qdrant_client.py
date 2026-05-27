@@ -9,16 +9,15 @@ from qdrant_client.http.models import (
     FieldCondition,
     MatchValue,
 )
-from sentence_transformers import SentenceTransformer
-
 from app.models.legal_unit import LegalUnit
 from app.config import settings
+from app.services.embedding_service import get_embedder
 
 
 class QdrantStore:
     def __init__(self):
         self.client: Optional[QdrantClient] = None
-        self.embedder: Optional[SentenceTransformer] = None
+        self.embedder = get_embedder()
         self.collection_name = settings.qdrant_collection
 
     async def initialize(self):
@@ -37,13 +36,6 @@ class QdrantStore:
         )
 
         logger.info(f"Connecting to Qdrant at {settings.qdrant_url}")
-
-        # Load embedding model
-        self.embedder = SentenceTransformer(
-            settings.embeddings_model,
-            device=settings.embeddings_device,
-            trust_remote_code=True,
-        )
 
         await self._ensure_collection()
 
@@ -288,6 +280,36 @@ class QdrantStore:
                 "payload": r.payload,
             }
             for r in results
+        ]
+
+    async def scroll_all(self, batch_size: int = 100) -> List[Dict[str, Any]]:
+        if not self.client:
+            raise RuntimeError("QdrantStore not initialized")
+
+        all_points: list = []
+        next_offset = None
+
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            all_points.extend(points)
+            if next_offset is None or len(points) == 0:
+                break
+
+        logger.info(f"Scrolled {len(all_points)} points from Qdrant")
+        return [
+            {
+                "id": p.payload.get("id", ""),
+                "texto": p.payload.get("texto", ""),
+                "score": 0.0,
+                "payload": p.payload,
+            }
+            for p in all_points
         ]
 
     async def close(self):

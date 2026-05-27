@@ -1,13 +1,11 @@
-import json
-import time
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from app.config import settings
 from app.models.schemas import QueryRequest, QueryResponse
 from app.services.query_service import QueryService
+from app.services.sse_manager import SSEStreamManager
 
 
 router = APIRouter(prefix="/api/v1", tags=["Legal RAG"])
@@ -112,29 +110,26 @@ async def corpus_stats(fastapi_request: Request):
 @router.post(
     "/query/stream",
     summary="Stream query results via SSE",
-    description="Ask a legal question and receive progressive updates: retrieval status → analysis tokens → final result",
+    description="Ask a legal question and receive progressive updates: retrieval → analysis → risk → incentives → complete",
 )
 async def query_legal_stream(request: QueryRequest, fastapi_request: Request, service: QueryService = Depends(get_query_service)):
     cid = getattr(fastapi_request.state, "correlation_id", None)
+    stream = SSEStreamManager()
 
     async def event_stream():
         with logger.contextualize(correlation_id=cid or "--------"):
-            yield f"data: {json.dumps({'event': 'start', 'correlation_id': cid})}\n\n"
+            yield stream.emit("start", {"correlation_id": cid})
             try:
-                yield f"data: {json.dumps({'event': 'retrieval', 'status': 'querying'})}\n\n"
-                response = await service.process_query(request)
-                yield f"data: {json.dumps({'event': 'analysis', 'direct_conclusion': response.answer.direct_conclusion[:500]})}\n\n"
-                yield f"data: {json.dumps({'event': 'risk', 'matrix': response.answer.risk_matrix.model_dump()})}\n\n"
-                yield f"data: {json.dumps({'event': 'incentives', 'detected': response.answer.incentives_detected.model_dump()})}\n\n"
-                yield f"data: {json.dumps({'event': 'complete', 'processing_time_ms': response.processing_time_ms, 'sources': response.sources})}\n\n"
+                async for event in service.process_query_streaming(request, stream):
+                    yield event
             except ValueError as e:
                 logger.error(f"Streaming query failed (retrieval stage): {e}")
                 error_detail = str(e)
                 stage_hint = "retrieval" if any(kw in error_detail.lower() for kw in ["bm25", "dense", "rerank", "qdrant", "retrieval", "no documents", "empty"]) else "processing"
-                yield f"data: {json.dumps({'event': 'error', 'detail': error_detail, 'stage': stage_hint})}\n\n"
+                yield stream.emit("error", {"detail": error_detail, "stage": stage_hint})
             except Exception as e:
                 logger.error(f"Streaming query failed: {e}")
-                yield f"data: {json.dumps({'event': 'error', 'detail': str(e), 'stage': 'unknown'})}\n\n"
+                yield stream.emit("error", {"detail": str(e), "stage": "unknown"})
 
     return StreamingResponse(
         event_stream(),

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from loguru import logger
@@ -18,10 +19,17 @@ class RetrievalEngine:
     async def initialize(self):
         await self.qdrant.initialize()
         await self._log_qdrant_collection_info()
-        if self.hybrid.bm25.load(BM25_INDEX_PATH):
-            logger.info("RetrievalEngine initialized (BM25 from cache)")
+        if not self.hybrid.bm25.load(BM25_INDEX_PATH):
+            logger.info("Building BM25 index from full Qdrant corpus...")
+            all_docs = await self.qdrant.scroll_all()
+            if all_docs:
+                self.hybrid.bm25.build_index(all_docs)
+                self.hybrid.bm25.save(BM25_INDEX_PATH)
+                logger.info(f"BM25 index built from {len(all_docs)} documents")
+            else:
+                logger.warning("No documents found in Qdrant — BM25 index empty")
         else:
-            logger.info("RetrievalEngine initialized (no BM25 cache)")
+            logger.info("RetrievalEngine initialized (BM25 from cache)")
 
     async def _log_qdrant_collection_info(self):
         try:
@@ -40,12 +48,14 @@ class RetrievalEngine:
         qdrant_filter = self.hybrid.metadata_filter.infer_from_query(query, metadata_filter)
         logger.info(f"Qdrant metadata filter: {qdrant_filter}")
 
-        qdrant_results = await self.qdrant.search(
+        bm25_task = self.hybrid.bm25.search(query, top_k=settings.bm25_top_k)
+        qdrant_task = self.qdrant.search(
             query=query,
             metadata_filter=qdrant_filter,
             top_k=top_k * 2,
         )
-        logger.info(f"Qdrant search returned {len(qdrant_results)} results with filter")
+        bm25_results, qdrant_results = await asyncio.gather(bm25_task, qdrant_task)
+        logger.info(f"BM25 returned {len(bm25_results)} results, Qdrant returned {len(qdrant_results)} results")
 
         if not qdrant_results:
             logger.warning("No results from Qdrant with filter — retrying without metadata filter")
@@ -60,12 +70,12 @@ class RetrievalEngine:
             logger.warning("Qdrant collection appears empty — no documents indexed")
             return [], qdrant_filter
 
-        # Build BM25 index from Qdrant results if not cached
-        if qdrant_results and not self.hybrid.bm25.index:
-            self.hybrid.bm25.build_index(qdrant_results)
-            self.hybrid.bm25.save(BM25_INDEX_PATH)
+        for r in qdrant_results:
+            r["dense_score"] = r.pop("score", 0.0)
 
-        results_reranked, filter_used = await self.hybrid.retrieve(query, metadata_filter)
+        results_reranked, filter_used = await self.hybrid.retrieve_with_results(
+            query, bm25_results, qdrant_results, metadata_filter, top_k=top_k,
+        )
 
         if not results_reranked:
             logger.warning("Hybrid retrieval returned empty — using raw Qdrant results as fallback")

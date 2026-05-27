@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END
 from app.rag.chain import LegalChain
 from app.retrieval.engine import RetrievalEngine
 from app.rag.context_builder import ContextBuilder
-from app.prompts.legal_prompts import LEGAL_RESPONSE_TEMPLATE
+from app.models.schemas import StructuredLegalResponse
 
 
 class AgentState(TypedDict):
@@ -20,6 +20,7 @@ class AgentState(TypedDict):
     needs_refinement: bool
     final_answer: str
     citations: List[Dict[str, Any]]
+    structured_response: Optional[StructuredLegalResponse]
 
 
 REFINE_PROMPT = """The following legal question about Bolivian renewable energy did not yield sufficient results.
@@ -92,13 +93,10 @@ class LegalAgentGraph:
         state["context"] = context
         state["citations"] = self.context_builder.extract_citations(state["documents"])
 
-        analysis = await self.chain.answer(state["question"], context)
-        state["analysis"] = analysis
-
-        if "Insufficient information" in analysis:
-            state["needs_refinement"] = state.get("iteration", 0) < 3
-        else:
-            state["needs_refinement"] = False
+        response = await self.chain.structured_answer(state["question"], context)
+        state["structured_response"] = response
+        state["analysis"] = response.regulatory_analysis
+        state["needs_refinement"] = response.insufficient_context and state.get("iteration", 0) < 3
         return state
 
     async def _risk_assess_node(self, state: AgentState) -> AgentState:
@@ -123,13 +121,14 @@ class LegalAgentGraph:
 
     async def _finalize_node(self, state: AgentState) -> AgentState:
         logger.info("Agent finalize")
-        if not state.get("analysis"):
-            state["final_answer"] = "Insufficient information in the specialized renewable energy legal corpus."
-        else:
-            answer_parts = [state["analysis"]]
+        sr = state.get("structured_response")
+        if sr and not sr.insufficient_context:
+            answer_parts = [sr.regulatory_analysis]
             if state.get("risk_analysis"):
                 answer_parts.append("\n\n## RISK ANALYSIS\n" + state["risk_analysis"])
             state["final_answer"] = "\n".join(answer_parts)
+        else:
+            state["final_answer"] = "Insufficient information in the specialized renewable energy legal corpus."
         return state
 
     def _check_refinement(self, state: AgentState) -> Literal["risk_assess", "refine"]:
@@ -151,6 +150,7 @@ class LegalAgentGraph:
             "needs_refinement": False,
             "final_answer": "",
             "citations": [],
+            "structured_response": None,
         }
         result = await self.graph.ainvoke(initial_state)
         return result

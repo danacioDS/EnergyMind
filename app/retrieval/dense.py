@@ -1,15 +1,13 @@
 from typing import List, Optional, Dict, Any
 from loguru import logger
-from sentence_transformers import SentenceTransformer
 
 from app.config import settings
+from app.services.embedding_service import get_embedder
 
 
 class DenseRetriever:
-    def __init__(self, model_name: str = settings.embeddings_model,
-                 device: str = settings.embeddings_device):
-        self.model = SentenceTransformer(model_name, device=device)
-        logger.info(f"Initialized DenseRetriever with {model_name} on {device}")
+    def __init__(self):
+        self.model = get_embedder()
 
     def encode(self, texts: List[str]) -> List[List[float]]:
         return self.model.encode(texts).tolist()
