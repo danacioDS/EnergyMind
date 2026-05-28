@@ -1,7 +1,5 @@
-import asyncio
-import json
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List
 from loguru import logger
 
 from app.models.legal_unit import LegalUnit
@@ -60,7 +58,10 @@ CORPUS_DEFINITIONS = [
 
 class IngestionPipeline:
     def __init__(self):
-        self.parser = LegalDocumentParser(normalizer=LegalTextNormalizer())
+        self.parser = LegalDocumentParser(
+            normalizer=LegalTextNormalizer()
+        )
+
         self.raw_path = Path(settings.corpus_raw_path)
         self.processed_path = Path(settings.corpus_processed_path)
         self.normalized_path = Path(settings.corpus_normalized_path)
@@ -70,8 +71,10 @@ class IngestionPipeline:
 
     def process_raw_files(self) -> List[LegalUnit]:
         all_units: List[LegalUnit] = []
+
         for definition in CORPUS_DEFINITIONS:
             filepath = self.raw_path / definition["file"]
+
             if not filepath.exists():
                 logger.warning(f"Raw file not found: {filepath}")
                 continue
@@ -94,27 +97,40 @@ class IngestionPipeline:
 
         normalized_path = self.normalized_path / "all_units.json"
         self.parser.to_json(all_units, normalized_path)
+
         return all_units
 
-    async def index_to_qdrant(self, units: List[LegalUnit]) -> int:
+    def index_to_qdrant(self, units: List[LegalUnit]) -> int:
+        # ✅ FIX: fully synchronous usage
         store = QdrantStore()
-        await store.initialize()
-        count = await store.upsert_units(units)
-        await store.close()
+
+        store.initialize()  # MUST be sync (no await anywhere)
+
+        try:
+            count = store.upsert_units(units)
+        finally:
+            store.close()
+
         logger.info(f"Indexed {count} units to Qdrant")
+
         return count
 
-    async def run(self) -> int:
+    def run(self) -> int:
         logger.info("Starting ingestion pipeline")
+
         units = self.process_raw_files()
+
         if not units:
             logger.error("No units to index")
             return 0
-        count = await self.index_to_qdrant(units)
+
+        count = self.index_to_qdrant(units)
+
         logger.info(f"Ingestion pipeline complete: {count} units indexed")
+
         return count
 
 
-async def run_ingestion():
+def run_ingestion():
     pipeline = IngestionPipeline()
-    return await pipeline.run()
+    return pipeline.run()

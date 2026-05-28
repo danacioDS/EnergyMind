@@ -1,7 +1,7 @@
-import asyncio
 import uuid
 from typing import List, Optional, Dict, Any
 from loguru import logger
+
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.models import (
@@ -19,10 +19,13 @@ from core.embeddings import get_embedder
 class QdrantStore:
     def __init__(self) -> None:
         self.client: Optional[QdrantClient] = None
-        self.embedder = None
+        self.embedder = get_embedder()
         self.collection_name = settings.qdrant_collection
 
-    async def initialize(self) -> None:
+    # =========================
+    # INIT (SYNC FIX)
+    # =========================
+    def initialize(self) -> None:
         self.client = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
@@ -30,11 +33,18 @@ class QdrantStore:
             https=False,
             timeout=60,
         )
-        self.embedder = get_embedder()
-        await asyncio.to_thread(self._ensure_collection)
+
+        self._ensure_collection()
+
         logger.info(f"Qdrant connected: {settings.qdrant_url}")
 
+    # =========================
+    # COLLECTION
+    # =========================
     def _ensure_collection(self) -> None:
+        if self.client is None:
+            raise RuntimeError("Qdrant client not initialized")
+
         collections = self.client.get_collections().collections
         existing = [c.name for c in collections]
 
@@ -56,6 +66,9 @@ class QdrantStore:
 
         logger.info(f"Collection created: {self.collection_name}")
 
+    # =========================
+    # INDEXES
+    # =========================
     def _create_payload_indexes(self) -> None:
         keyword_fields = [
             "tipo_norma",
@@ -90,6 +103,9 @@ class QdrantStore:
             except Exception as e:
                 logger.warning(f"Index issue {field}: {e}")
 
+    # =========================
+    # CONVERT
+    # =========================
     def _unit_to_point(
         self,
         unit: LegalUnit,
@@ -121,6 +137,9 @@ class QdrantStore:
             },
         )
 
+    # =========================
+    # UPSERT
+    # =========================
     def upsert_units(self, units: List[LegalUnit]) -> int:
         self._ensure_collection()
 
@@ -156,6 +175,9 @@ class QdrantStore:
         logger.info(f"Ingestion done: {total} points")
         return total
 
+    # =========================
+    # SEARCH
+    # =========================
     def build_filter(
         self,
         metadata_filter: Optional[Dict[str, Any]] = None,
@@ -260,7 +282,6 @@ class QdrantStore:
             for p in all_points
         ]
 
-    async def close(self) -> None:
-        if self.client:
-            self.client.close()
+    def close(self) -> None:
+        self.client = None
         logger.info("Qdrant closed")
