@@ -1,6 +1,7 @@
 "use client"
 
-import { Scale } from "lucide-react"
+import Link from "next/link"
+import { Scale, BarChart3 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 interface HeaderProps {
@@ -22,6 +23,12 @@ export default function Header({ onToggleFilters, filtersVisible }: HeaderProps)
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" asChild>
+            <Link href="/stats" className="gap-2 flex items-center">
+              <BarChart3 className="h-4 w-4" />
+              <span className="hidden sm:inline">Corpus</span>
+            </Link>
+          </Button>
           <Button
             variant="outline"
             size="sm"
