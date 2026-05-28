@@ -75,9 +75,35 @@ All CPU-bound BM25 operations (`get_scores`, `BM25Okapi`) are offloaded to a thr
 
 ### Prerequisites
 
-- Python 3.11+
-- Docker (Qdrant + Redis)
+- Docker + Docker Compose (for Full Stack mode)
+- Python 3.11+ (for local development)
 - Ollama (local LLM) or OpenAI API key
+
+---
+
+### 🐳 Full Stack (Docker) — End-to-end in 2 commands
+
+```bash
+# 1. Start everything (Qdrant + Redis + API + Frontend)
+docker compose -f docker/docker-compose.yml up -d
+
+# 2. Verify — API health
+curl http://localhost:8000/api/v1/health
+```
+
+Services:
+
+| Service | Port | URL |
+|---------|------|-----|
+| **Frontend** (Next.js 16) | 3000 | http://localhost:3000 |
+| **API** (FastAPI) | 8000 | http://localhost:8000/docs |
+| **Qdrant** (vector DB) | 6333 | — |
+| **Redis** (cache) | 6379 | — |
+
+After startup:
+- **UI** → http://localhost:3000 (ChatInterface ready)
+- **API docs** → http://localhost:8000/docs
+- **Corpus is pre-ingested** → `POST /api/v1/query` responds immediately
 
 ---
 
@@ -85,7 +111,7 @@ All CPU-bound BM25 operations (`get_scores`, `BM25Okapi`) are offloaded to a thr
 
 ```bash
 # Clone repository
-cd lexenergy
+cd energy_lex
 
 # Create virtual environment
 python3 -m venv venv
@@ -110,21 +136,6 @@ python -c "import asyncio; from ingestion.pipeline import run_ingestion; asyncio
 # Run API
 uvicorn app.main:app --reload
 ```
-
----
-
-### 🐳 Full Stack (Docker)
-
-```bash
-docker compose -f docker/docker-compose.yml up -d
-```
-
-Services:
-
-- **Qdrant** — vector database (port 6333)
-- **Redis** — query response cache (port 6379)
-- **LexEnergy API** — FastAPI backend (port 8000)
-- **LexEnergy Frontend** — Next.js 15 + shadcn/ui (port 3000)
 
 ---
 
@@ -163,6 +174,18 @@ curl -X POST http://localhost:8000/api/v1/query \
     "question": "Compare solar vs wind investment risks",
     "use_agent": true
   }'
+```
+
+### Trigger ingestion
+
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest
+```
+
+### Corpus statistics
+
+```bash
+curl http://localhost:8000/api/v1/corpus/stats
 ```
 
 ### Health check
@@ -217,13 +240,14 @@ curl http://localhost:8000/api/v1/health
 ### SSE stream events
 
 | Event | Payload | When |
-|---|---|---|
+|---|---|---|---|
 | `start` | `{correlation_id}` | Connection established |
-| `retrieval_complete` | `{source_count}` | Documents fetched |
+| `retrieval` | `{status}` | Documents fetched |
 | `analysis` | `{direct_conclusion}` | LLM direct conclusion |
 | `risk` | `{matrix}` | Risk matrix available |
 | `incentives` | `{detected}` | Incentive info available |
-| `citations` | `{citations[]}` | Legal citations |
+| `heartbeat` | — | Keep-alive ping |
+| `insufficient_context` | — | Corpus lacks sufficient info |
 | `complete` | `{processing_time_ms, sources}` | Response finished |
 | `error` | `{detail, stage}` | Error occurred |
 
@@ -240,14 +264,16 @@ lexenergy/
 │   ├── agents/           # LangGraph agent with refinement loop
 │   ├── prompts/          # Legal prompt templates (Spanish)
 │   ├── models/           # Pydantic request/response schemas
-│   ├── services/         # QueryService, SSE manager, Redis cache, embedding singleton
+│   ├── services/         # QueryService, SSE manager, Redis cache
 │   ├── config.py         # Pydantic Settings (env-based)
 │   └── main.py           # FastAPI app, CORS, lifespan
 │
+├── core/                 # Singleton embeddings (BGE-M3)
 ├── ingestion/            # Scrapers (LexiVox, AETN) + normalization pipeline
-├── corpus/               # Raw/processed/normalized legal dataset
+├── corpus/               # Raw/normalized legal dataset
+├── cache/                # BM25 index persistence
 ├── vectorstore/          # Qdrant client wrapper
-├── frontend/             # Next.js 15 + shadcn/ui
+├── frontend/             # Next.js 16 + shadcn/ui
 ├── tests/
 └── docker/
 ```
@@ -260,11 +286,14 @@ lexenergy/
 - **Metadata-first retrieval** — filter before vector search reduces noise
 - **Constitutional hierarchy** — CPE Art. 410 priority enforced in prompts
 - **Hybrid retrieval** — BM25 (full corpus) + Qdrant dense in parallel, fused with adaptive alpha
+- **Thread-pooled BM25** — CPU-bound scoring offloaded via `asyncio.to_thread` to avoid blocking the event loop
+- **Lazy reranker init** — Cross-encoder loaded on first use (not construction), with automatic fallback from FlagReranker to CrossEncoder
 - **Structured legal output** — conclusions, risk matrix, incentives, and citations always enforced via Pydantic schema
 - **Singleton embedding model** — BGE-M3 loaded once and shared across QdrantStore and DenseRetriever
 - **SSE streaming** — progressive event emission (retrieval → LLM stages → complete) instead of batch
 - **Query caching** — Redis-backed SHA256 keyed cache with 1h TTL
 - **Agentic refinement** — optional LangGraph agent rephrases queries up to 3 iterations when results are insufficient
+- **Graceful degradation** — Redis cache, BM25 index, and reranker all have fallback paths if unavailable
 
 ---
 

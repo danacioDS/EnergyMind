@@ -31,7 +31,7 @@ LexEnergy Bolivia is a **Legal RAG (Retrieval-Augmented Generation)** platform t
 
 | Command | File | Purpose |
 |---------|------|---------|
-| `lexenergy-api` | `app/main.py:start` | Starts FastAPI/uvicorn server |
+| `lexenergy-api` | `app/main.py` (module-level `app`) | FastAPI ASGI application (uvicorn) |
 | `lexenergy-ingest` | `ingestion.pipeline:run_ingestion` | Runs document indexing |
 
 ### API Routes (`app/api/routes.py`)
@@ -88,14 +88,15 @@ QueryService.process_query()
 
 ```
 SSE Events (progressive):
-  start       →  { correlation_id }
-  retrieval_complete  →  { doc_count }
-  analysis    →  { direct_conclusion }
-  risk        →  { risk_matrix }
-  incentives  →  { incentive_info }
-  citations   →  { citations }
-  complete    →  { response }
-  error       →  { detail, stage }
+  start                 →  { correlation_id }
+  retrieval             →  { status }
+  analysis              →  { direct_conclusion }
+  risk                  →  { matrix }
+  incentives            →  { detected }
+  heartbeat             →  (keep-alive ping)
+  insufficient_context  →  (corpus lacks info)
+  complete              →  { processing_time_ms, sources }
+  error                 →  { detail, stage }
 ```
 
 ---
@@ -125,13 +126,14 @@ app/                          # Backend application
 ├── services/
 │   ├── query_service.py      # QueryService (lifecycle, orchestration)
 │   ├── cache.py              # Redis-backed cache (SHA256 key, 1h TTL)
-│   ├── sse_manager.py        # SSE event formatting
-│   └── embedding_service.py
+│   └── sse_manager.py        # SSE event formatting
 ├── agents/
 │   └── graph.py              # LangGraph agent with refinement loop
 
 core/
-└── embeddings.py             # Singleton SentenceTransformer (BGE-M3)
+└── embeddings.py             # Singleton SentenceTransformer (BGE-M3), shared across QdrantStore and DenseRetriever
+
+cache/                        # BM25 index persistence (bm25_index.pkl)
 
 vectorstore/
 └── qdrant_client.py          # QdrantStore (collection mgmt, upsert, search)
@@ -147,8 +149,7 @@ ingestion/                    # Document ingestion pipeline
 
 corpus/                       # Legal dataset
 ├── raw/                      # Raw .txt files
-├── processed/
-└── normalized/all_units.json # Processed corpus
+└── normalized/all_units.json # Normalized corpus units
 
 frontend/                     # Next.js 16 / React 19
 └── src/
@@ -339,7 +340,7 @@ QueryResponse
 ## Caching
 
 - **Backend**: Redis (optional, graceful degradation)
-- **Key**: SHA256 of `question + subsector + tipo_norma + use_agent`
+- **Key**: SHA256 of `question + subsector` (first 16 hex chars)
 - **TTL**: 1 hour
 - **Init**: `QueryService.initialize()` with 15s timeout — cache disabled if Redis unavailable
 
