@@ -98,6 +98,7 @@ class IngestionPipeline:
 
     async def index_to_qdrant(self, units: List[LegalUnit]) -> int:
         store = QdrantStore()
+        await store.initialize()
         count = await store.upsert_units(units)
         await store.close()
         logger.info(f"Indexed {count} units to Qdrant")

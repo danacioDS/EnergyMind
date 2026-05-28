@@ -12,49 +12,17 @@ class Reranker:
         model_name: str = settings.reranker_model,
         device: str = settings.reranker_device,
     ):
-        #
-        # NO cargar modelos aquí
-        #
         self.model_name = model_name
-
-        #
-        # Forzar CPU temporalmente
-        #
         self.device = "cpu"
-
         self.model = None
 
-        logger.info(
-            f"Reranker created "
-            f"(model={self.model_name}, device={self.device})"
-        )
+        logger.info(f"Reranker created (model={self.model_name}, device={self.device})")
 
     async def initialize(self):
-        """
-        Inicialización lazy del modelo.
-        """
-        logger.info("RERANKER STEP 1 - initialize start")
-
-        #
-        # Intentar FlagEmbedding primero
-        #
         try:
-            logger.info(
-                "RERANKER STEP 2 - importing FlagReranker"
-            )
-
             from FlagEmbedding import FlagReranker
 
-            logger.info(
-                "RERANKER STEP 3 - FlagReranker imported"
-            )
-
             t = time.perf_counter()
-
-            logger.info(
-                f"RERANKER STEP 4 - loading FlagReranker model: "
-                f"{self.model_name}"
-            )
 
             self.model = FlagReranker(
                 self.model_name,
@@ -63,48 +31,22 @@ class Reranker:
             )
 
             logger.info(
-                f"RERANKER STEP 5 - FlagReranker loaded "
+                f"Reranker initialized with {self.model_name} "
                 f"in {time.perf_counter() - t:.2f}s"
             )
 
             return
 
         except ImportError:
-            logger.warning(
-                "FlagEmbedding not available, "
-                "using CrossEncoder fallback"
-            )
+            logger.warning("FlagEmbedding not available, using CrossEncoder fallback")
 
         except Exception:
-            logger.exception(
-                "FlagReranker initialization failed"
-            )
+            logger.exception("FlagReranker initialization failed")
 
-        #
-        # Fallback: CrossEncoder
-        #
         try:
-            logger.info(
-                "RERANKER STEP 6 - importing CrossEncoder"
-            )
-
             from sentence_transformers import CrossEncoder
 
-            logger.info(
-                "RERANKER STEP 7 - CrossEncoder imported"
-            )
-
-            #
-            # Modelo más liviano temporalmente
-            #
-            fallback_model = (
-                "cross-encoder/ms-marco-MiniLM-L-6-v2"
-            )
-
-            logger.info(
-                f"RERANKER STEP 8 - loading CrossEncoder model: "
-                f"{fallback_model}"
-            )
+            fallback_model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
             t = time.perf_counter()
 
@@ -115,14 +57,12 @@ class Reranker:
             )
 
             logger.info(
-                f"RERANKER STEP 9 - CrossEncoder loaded "
+                f"Reranker initialized with {fallback_model} "
                 f"in {time.perf_counter() - t:.2f}s"
             )
 
         except Exception:
-            logger.exception(
-                "Failed to initialize CrossEncoder reranker"
-            )
+            logger.exception("Failed to initialize CrossEncoder reranker")
             self.model = None
 
     async def rerank(
@@ -133,20 +73,14 @@ class Reranker:
     ) -> List[Dict[str, Any]]:
 
         if not self.model:
-            logger.warning(
-                "Reranker model unavailable — skipping rerank"
-            )
+            logger.warning("Reranker model unavailable — skipping rerank")
             return documents[:top_k]
 
         if not documents:
-            logger.warning(
-                "Reranker received empty documents"
-            )
+            logger.warning("Reranker received empty documents")
             return []
 
-        logger.info(
-            f"Reranking {len(documents)} documents"
-        )
+        logger.info(f"Reranking {len(documents)} documents")
 
         pairs = [
             (query, d.get("texto", ""))
@@ -154,21 +88,12 @@ class Reranker:
         ]
 
         try:
-            #
-            # FlagEmbedding API
-            #
             if hasattr(self.model, "compute_score"):
                 scores = self.model.compute_score(pairs)
 
-            #
-            # CrossEncoder API
-            #
             else:
                 scores = self.model.predict(pairs)
 
-            #
-            # Normalizar scores
-            #
             if (
                 isinstance(scores, list)
                 and len(scores) > 0
@@ -183,9 +108,7 @@ class Reranker:
             )
 
             if not scores_list:
-                logger.warning(
-                    "Reranker produced empty scores"
-                )
+                logger.warning("Reranker produced empty scores")
                 return documents[:top_k]
 
             scored = list(zip(documents, scores_list))
@@ -203,17 +126,11 @@ class Reranker:
                     "rerank_score": float(score),
                 })
 
-            logger.info(
-                f"Rerank completed "
-                f"(returned {len(results)} docs)"
-            )
+            logger.info(f"Rerank completed (returned {len(results)} docs)")
 
             return results
 
         except Exception:
             logger.exception("Rerank failed")
 
-            #
-            # Fail-safe:
-            #
             return documents[:top_k]

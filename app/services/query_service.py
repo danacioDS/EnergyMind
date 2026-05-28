@@ -1,9 +1,10 @@
 import asyncio
 import time
-from typing import Optional, AsyncGenerator
+from typing import Optional
 
 from loguru import logger
 
+from core.runtime.resource_manager import ResourceManager
 from app.rag.pipeline import RAGPipeline
 from app.agents.graph import LegalAgentGraph
 from app.models.schemas import (
@@ -25,155 +26,55 @@ from app.config import settings
 
 
 class QueryService:
-    def __init__(self):
+    def __init__(self, rm: ResourceManager) -> None:
+        self.rm = rm
         self.pipeline: Optional[RAGPipeline] = None
         self.agent: Optional[LegalAgentGraph] = None
         self.redis_enabled = False
 
-    async def initialize(self):
-        logger.info("QS STEP 1 - starting QueryService.initialize()")
+    async def initialize(self) -> None:
+        t = time.perf_counter()
 
-        total_timer = time.perf_counter()
-
-        #
-        # PIPELINE
-        #
-        try:
-            logger.info("QS STEP 2 - creating RAGPipeline")
-
-            t = time.perf_counter()
-
-            self.pipeline = RAGPipeline()
-
-            logger.info(
-                f"QS STEP 3 - RAGPipeline created "
-                f"({time.perf_counter() - t:.2f}s)"
-            )
-
-            logger.info("QS STEP 4 - initializing RAGPipeline")
-
-            t = time.perf_counter()
-
-            await asyncio.wait_for(
-                self.pipeline.initialize(),
-                timeout=180,
-            )
-
-            logger.info(
-                f"QS STEP 5 - RAGPipeline initialized "
-                f"({time.perf_counter() - t:.2f}s)"
-            )
-
-        except asyncio.TimeoutError:
-            logger.exception(
-                "RAGPipeline initialization timeout"
-            )
-            raise
-
-        except Exception:
-            logger.exception(
-                "Failed initializing RAGPipeline"
-            )
-            raise
-
-        #
-        # AGENT
-        #
-        try:
-            logger.info("QS STEP 6 - creating LegalAgentGraph")
-
-            t = time.perf_counter()
-
-            self.agent = LegalAgentGraph()
-
-            logger.info(
-                f"QS STEP 7 - LegalAgentGraph created "
-                f"({time.perf_counter() - t:.2f}s)"
-            )
-
-            logger.info("QS STEP 8 - initializing LegalAgentGraph")
-
-            t = time.perf_counter()
-
-            await asyncio.wait_for(
-                self.agent.initialize(),
-                timeout=120,
-            )
-
-            logger.info(
-                f"QS STEP 9 - LegalAgentGraph initialized "
-                f"({time.perf_counter() - t:.2f}s)"
-            )
-
-        except asyncio.TimeoutError:
-            logger.exception(
-                "LegalAgentGraph initialization timeout"
-            )
-            raise
-
-        except Exception:
-            logger.exception(
-                "Failed initializing LegalAgentGraph"
-            )
-            raise
-
-        #
-        # REDIS
-        #
-        logger.info("QS STEP 10 - initializing Redis")
-
-        try:
-            t = time.perf_counter()
-
-            await asyncio.wait_for(
-                init_redis(
-                    host=settings.redis_host,
-                    port=settings.redis_port,
-                ),
-                timeout=15,
-            )
-
-            self.redis_enabled = True
-
-            logger.info(
-                f"QS STEP 11 - Redis initialized "
-                f"({time.perf_counter() - t:.2f}s)"
-            )
-
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Redis initialization timeout — cache disabled"
-            )
-
-        except Exception:
-            logger.exception(
-                "Redis unavailable — cache disabled"
-            )
-
-        logger.info(
-            f"QueryService initialized successfully "
-            f"({time.perf_counter() - total_timer:.2f}s)"
+        await asyncio.gather(
+            self._init_pipeline(),
+            self._init_agent(),
+            self._init_redis(),
         )
 
-    async def close(self):
-        logger.info("Closing QueryService")
+        logger.info(f"QueryService initialized in {time.perf_counter() - t:.2f}s")
 
+    async def _init_pipeline(self) -> None:
+        t = time.perf_counter()
+        self.pipeline = RAGPipeline(qdrant=self.rm.qdrant())
+        await asyncio.wait_for(self.pipeline.initialize(), timeout=180)
+        logger.info(f"RAGPipeline initialized in {time.perf_counter() - t:.2f}s")
+
+    async def _init_agent(self) -> None:
+        t = time.perf_counter()
+        self.agent = LegalAgentGraph()
+        await asyncio.wait_for(self.agent.initialize(), timeout=120)
+        logger.info(f"LegalAgentGraph initialized in {time.perf_counter() - t:.2f}s")
+
+    async def _init_redis(self) -> None:
         try:
-            if self.pipeline:
+            await asyncio.wait_for(
+                init_redis(host=settings.redis_host, port=settings.redis_port),
+                timeout=15,
+            )
+            self.redis_enabled = True
+            logger.info("Redis connected")
+        except Exception:
+            logger.warning("Redis unavailable — cache disabled")
+
+    async def close(self) -> None:
+        if self.pipeline:
+            try:
                 await self.pipeline.close()
-
-        except Exception:
-            logger.exception(
-                "Error closing pipeline"
-            )
-
-        try:
-            if self.redis_enabled:
+            except Exception:
+                logger.exception("Error closing pipeline")
+        if self.redis_enabled:
+            try:
                 await close_redis()
-
-        except Exception:
-            logger.exception(
-                "Error closing Redis"
-            )
-
-        logger.info("QueryService closed successfully")
+            except Exception:
+                logger.exception("Error closing Redis")
+        logger.info("QueryService closed")

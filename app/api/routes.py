@@ -11,11 +11,13 @@ from app.services.sse_manager import SSEStreamManager
 router = APIRouter(prefix="/api/v1", tags=["Legal RAG"])
 
 
-async def get_query_service() -> QueryService:
-    from app.main import query_service
-    if not query_service:
+def get_query_service(request: Request) -> QueryService:
+    if not getattr(request.app.state, "ready", False):
+        raise HTTPException(status_code=503, detail="Service warming up — retry in a few seconds")
+    svc = getattr(request.app.state, "query_service", None)
+    if svc is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
-    return query_service
+    return svc
 
 
 @router.post(
@@ -37,16 +39,20 @@ async def query_legal(request: QueryRequest, fastapi_request: Request, service: 
 
 @router.get(
     "/health",
-    summary="Health check endpoint",
+    summary="Liveness check",
 )
-async def health(fastapi_request: Request):
-    cid = getattr(fastapi_request.state, "correlation_id", None)
-    with logger.contextualize(correlation_id=cid or "--------"):
-        return {
-            "status": "healthy",
-            "service": "LexEnergy Bolivia",
-            "version": "1.0.0",
-        }
+async def health():
+    return {"status": "alive"}
+
+
+@router.get(
+    "/health/ready",
+    summary="Readiness check",
+)
+async def readiness(request: Request):
+    if not getattr(request.app.state, "ready", False):
+        raise HTTPException(status_code=503, detail="Service warming up")
+    return {"status": "ready"}
 
 
 @router.post(

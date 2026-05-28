@@ -1,21 +1,18 @@
 import sys
 import time
 import uuid
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-
-from loguru import logger
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from loguru import logger
 
 from app.config import settings
 from app.api.routes import router
-from app.services.query_service import QueryService
-
-
-query_service: QueryService | None = None
+from core.runtime.resource_manager import ResourceManager
 
 
 class CorrelationIDMiddleware(BaseHTTPMiddleware):
@@ -31,7 +28,7 @@ class CorrelationIDMiddleware(BaseHTTPMiddleware):
             return response
 
 
-def setup_logging():
+def setup_logging() -> None:
     log_format = settings.log_format
     log_level = settings.log_level
 
@@ -77,61 +74,54 @@ def setup_logging():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global query_service
-
     setup_logging()
+    t0 = time.perf_counter()
+    logger.info("LexEnergy Bolivia starting (fast boot mode)...")
 
-    logger.info("Starting LexEnergy Bolivia...")
+    rm = ResourceManager()
+    app.state.resource_manager = rm
+    app.state.ready = False
+    app.state.query_service = None
 
-    startup_timer = time.perf_counter()
+    warmup_task = asyncio.create_task(
+        _background_init(app, rm),
+        name="lexenergy-warmup",
+    )
 
+    logger.info(f"API boot in {time.perf_counter() - t0:.3f}s — warmup running in background")
+
+    yield
+
+    warmup_task.cancel()
     try:
-        logger.info("STEP 1 - creating QueryService")
+        await warmup_task
+    except (asyncio.CancelledError, Exception):
+        pass
 
-        query_service = QueryService()
+    if app.state.query_service:
+        await app.state.query_service.close()
 
-        logger.info("STEP 2 - QueryService created")
+    await rm.close()
+    logger.info("Shutdown complete")
 
-        logger.info("STEP 3 - initializing QueryService")
 
-        step_timer = time.perf_counter()
+async def _background_init(app: FastAPI, rm: ResourceManager) -> None:
+    try:
+        t = time.perf_counter()
 
-        await query_service.initialize()
+        await rm.warmup()
 
-        logger.info(
-            f"STEP 4 - QueryService initialized "
-            f"({time.perf_counter() - step_timer:.2f}s)"
-        )
+        from app.services.query_service import QueryService
+        svc = QueryService(rm)
+        await svc.initialize()
+        app.state.query_service = svc
+        app.state.ready = True
 
-        logger.info(
-            f"LexEnergy Bolivia ready "
-            f"in {time.perf_counter() - startup_timer:.2f}s"
-        )
-
-        yield
+        logger.info(f"LexEnergy Bolivia fully ready in {time.perf_counter() - t:.2f}s")
 
     except Exception:
-        logger.exception("Fatal error during application startup")
-        raise
-
-    finally:
-        logger.info("Shutting down LexEnergy Bolivia...")
-
-        if query_service:
-            try:
-                shutdown_timer = time.perf_counter()
-
-                await query_service.close()
-
-                logger.info(
-                    f"QueryService closed "
-                    f"({time.perf_counter() - shutdown_timer:.2f}s)"
-                )
-
-            except Exception:
-                logger.exception("Error while closing QueryService")
-
-        logger.info("Shutdown complete")
+        logger.exception("Background init failed — service will return 503")
+        app.state.ready = False
 
 
 app = FastAPI(

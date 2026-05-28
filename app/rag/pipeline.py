@@ -16,38 +16,13 @@ from app.models.schemas import (
 )
 
 class RAGPipeline:
-    def __init__(self):
-
-        logger.info("PIPELINE STEP 1 - creating RetrievalEngine")
-
-        self.retrieval = RetrievalEngine()
-
-        logger.info("PIPELINE STEP 2 - RetrievalEngine created")
-
-        logger.info("PIPELINE STEP 3 - creating LegalChain")
-
+    def __init__(self, qdrant=None):
+        self.retrieval = RetrievalEngine(qdrant=qdrant)
         self.chain = LegalChain()
-
-        logger.info("PIPELINE STEP 4 - LegalChain created")
-
-        logger.info("PIPELINE STEP 5 - creating ContextBuilder")
-
         self.context_builder = ContextBuilder()
 
-        logger.info("PIPELINE STEP 6 - ContextBuilder created")
-
     async def initialize(self):
-
-        logger.info(
-            "PIPELINE INIT STEP 1 - initializing RetrievalEngine"
-        )
-
         await self.retrieval.initialize()
-
-        logger.info(
-            "PIPELINE INIT STEP 2 - RetrievalEngine initialized"
-        )
-
         logger.info("RAGPipeline initialized")
 
     async def query(
@@ -58,10 +33,6 @@ class RAGPipeline:
         vigente: Optional[bool] = None,
         top_k: int = 5,
     ) -> QueryResponse:
-
-        logger.info(
-            f"PIPELINE QUERY START - {question[:80]}"
-        )
 
         start_time = time.time()
 
@@ -76,14 +47,7 @@ class RAGPipeline:
         if vigente is not None:
             metadata_filter["vigente"] = vigente
 
-        logger.info(
-            f"PIPELINE QUERY - metadata filter: {metadata_filter}"
-        )
-
-        #
-        # RETRIEVAL
-        #
-        logger.info("PIPELINE QUERY STEP 1 - retrieval start")
+        logger.info(f"PIPELINE QUERY - metadata filter: {metadata_filter}")
 
         documents, filter_used = await self.retrieval.retrieve(
             query=question,
@@ -91,16 +55,10 @@ class RAGPipeline:
             top_k=top_k,
         )
 
-        logger.info(
-            f"PIPELINE QUERY STEP 2 - retrieval done "
-            f"(docs={len(documents)})"
-        )
+        logger.info(f"Retrieved {len(documents)} documents")
 
         if not documents:
-
-            logger.warning(
-                "No documents retrieved for query"
-            )
+            logger.warning("No documents retrieved for query")
 
             processing_time = int(
                 (time.time() - start_time) * 1000
@@ -124,44 +82,15 @@ class RAGPipeline:
                 processing_time_ms=processing_time,
             )
 
-        #
-        # CONTEXT BUILDING
-        #
-        logger.info(
-            "PIPELINE QUERY STEP 3 - building context"
-        )
+        context = self.context_builder.build_context(documents)
 
-        context = self.context_builder.build_context(
-            documents
-        )
-
-        logger.info(
-            "PIPELINE QUERY STEP 4 - extracting citations"
-        )
-
-        citations = self.context_builder.extract_citations(
-            documents
-        )
-
-        #
-        # LLM CHAIN
-        #
-        logger.info(
-            "PIPELINE QUERY STEP 5 - structured_answer start"
-        )
+        citations = self.context_builder.extract_citations(documents)
 
         structured = await self.chain.structured_answer(
             question,
             context,
         )
 
-        logger.info(
-            "PIPELINE QUERY STEP 6 - structured_answer done"
-        )
-
-        #
-        # RESPONSE BUILDING
-        #
         if structured.insufficient_context:
 
             analysis = RegulatoryAnalysis(
@@ -234,10 +163,7 @@ class RAGPipeline:
             (time.time() - start_time) * 1000
         )
 
-        logger.info(
-            f"PIPELINE QUERY COMPLETE "
-            f"({processing_time}ms)"
-        )
+        logger.info(f"Query complete ({processing_time}ms)")
 
         return QueryResponse(
             question=question,
@@ -250,13 +176,5 @@ class RAGPipeline:
         )
 
     async def close(self):
-
-        logger.info(
-            "PIPELINE CLOSE - closing RetrievalEngine"
-        )
-
+        logger.info("Closing RAGPipeline")
         await self.retrieval.close()
-
-        logger.info(
-            "PIPELINE CLOSE - RetrievalEngine closed"
-        )

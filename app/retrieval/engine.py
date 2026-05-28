@@ -12,23 +12,36 @@ BM25_INDEX_PATH = Path(settings.base_dir) / "cache" / "bm25_index.pkl"
 
 
 class RetrievalEngine:
-    def __init__(self):
-        self.qdrant = QdrantStore()
+    def __init__(self, qdrant=None):
+        self.qdrant = qdrant or QdrantStore()
         self.hybrid = HybridRetriever()
+        self._owns_qdrant = qdrant is None
 
-    async def initialize(self):
+    async def initialize(self) -> None:
+        if self._owns_qdrant:
+            await self.qdrant.initialize()
+
         await self._log_qdrant_collection_info()
-        if not self.hybrid.bm25.load(BM25_INDEX_PATH):
-            logger.info("Building BM25 index from full Qdrant corpus...")
+
+        bm25_loaded = self.hybrid.bm25.load(BM25_INDEX_PATH)
+
+        if bm25_loaded:
+            bm25_coro = asyncio.sleep(0)
+        else:
+            logger.info("BM25 cache miss — building from full corpus...")
             all_docs = await self.qdrant.scroll_all()
-            if all_docs:
+            async def _build_and_save():
                 await asyncio.to_thread(self.hybrid.bm25.build_index, all_docs)
                 self.hybrid.bm25.save(BM25_INDEX_PATH)
-                logger.info(f"BM25 index built from {len(all_docs)} documents")
-            else:
-                logger.warning("No documents found in Qdrant — BM25 index empty")
-        else:
-            logger.info("RetrievalEngine initialized (BM25 from cache)")
+                logger.info(f"BM25 built from {len(all_docs)} documents")
+            bm25_coro = _build_and_save()
+
+        await asyncio.gather(
+            bm25_coro,
+            self.hybrid.reranker.initialize(),
+        )
+
+        logger.info("RetrievalEngine initialized")
 
     async def _log_qdrant_collection_info(self):
         try:
@@ -84,4 +97,7 @@ class RetrievalEngine:
         return results_reranked, filter_used
 
     async def close(self):
-        await self.qdrant.close()
+        if self._owns_qdrant:
+            await self.qdrant.close()
+        else:
+            await self.qdrant.close()

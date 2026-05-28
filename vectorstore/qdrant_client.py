@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import List, Optional, Dict, Any
 from loguru import logger
@@ -16,7 +17,12 @@ from core.embeddings import get_embedder
 
 
 class QdrantStore:
-    def __init__(self):
+    def __init__(self) -> None:
+        self.client: Optional[QdrantClient] = None
+        self.embedder = None
+        self.collection_name = settings.qdrant_collection
+
+    async def initialize(self) -> None:
         self.client = QdrantClient(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
@@ -24,16 +30,11 @@ class QdrantStore:
             https=False,
             timeout=60,
         )
-
         self.embedder = get_embedder()
-        self.collection_name = settings.qdrant_collection
+        await asyncio.to_thread(self._ensure_collection)
+        logger.info(f"Qdrant connected: {settings.qdrant_url}")
 
-        self._ensure_collection()
-
-    # =========================
-    # COLLECTION MANAGEMENT
-    # =========================
-    def _ensure_collection(self):
+    def _ensure_collection(self) -> None:
         collections = self.client.get_collections().collections
         existing = [c.name for c in collections]
 
@@ -53,9 +54,9 @@ class QdrantStore:
 
         self._create_payload_indexes()
 
-        logger.success(f"Collection created: {self.collection_name}")
+        logger.info(f"Collection created: {self.collection_name}")
 
-    def _create_payload_indexes(self):
+    def _create_payload_indexes(self) -> None:
         keyword_fields = [
             "tipo_norma",
             "norma_id",
@@ -89,9 +90,6 @@ class QdrantStore:
             except Exception as e:
                 logger.warning(f"Index issue {field}: {e}")
 
-    # =========================
-    # VECTOR TRANSFORMATION
-    # =========================
     def _unit_to_point(
         self,
         unit: LegalUnit,
@@ -123,9 +121,6 @@ class QdrantStore:
             },
         )
 
-    # =========================
-    # INGESTION
-    # =========================
     def upsert_units(self, units: List[LegalUnit]) -> int:
         self._ensure_collection()
 
@@ -158,12 +153,9 @@ class QdrantStore:
             total += len(batch)
             logger.info(f"Upsert batch: {total}/{len(points)}")
 
-        logger.success(f"Ingestion done: {total} points")
+        logger.info(f"Ingestion done: {total} points")
         return total
 
-    # =========================
-    # FILTERS
-    # =========================
     def build_filter(
         self,
         metadata_filter: Optional[Dict[str, Any]] = None,
@@ -204,9 +196,6 @@ class QdrantStore:
 
         return Filter(must=conditions) if conditions else None
 
-    # =========================
-    # SEARCH
-    # =========================
     def search(
         self,
         query: str,
@@ -241,9 +230,6 @@ class QdrantStore:
             for r in results
         ]
 
-    # =========================
-    # SCROLL
-    # =========================
     def scroll_all(self, batch_size: int = 100) -> List[Dict[str, Any]]:
         self._ensure_collection()
 
@@ -274,9 +260,7 @@ class QdrantStore:
             for p in all_points
         ]
 
-    # =========================
-    # CLOSE
-    # =========================
-    def close(self):
-        self.client.close()
+    async def close(self) -> None:
+        if self.client:
+            self.client.close()
         logger.info("Qdrant closed")
