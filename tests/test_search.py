@@ -3,7 +3,6 @@ from vectorstore.qdrant_client import QdrantStore
 
 async def main():
     store = QdrantStore()
-    await store.initialize()
 
     results = await store.search("generación de electricidad", top_k=5)
 

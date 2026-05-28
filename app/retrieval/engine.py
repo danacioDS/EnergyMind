@@ -17,7 +17,6 @@ class RetrievalEngine:
         self.hybrid = HybridRetriever()
 
     async def initialize(self):
-        await self.qdrant.initialize()
         await self._log_qdrant_collection_info()
         if not self.hybrid.bm25.load(BM25_INDEX_PATH):
             logger.info("Building BM25 index from full Qdrant corpus...")

@@ -1,5 +1,6 @@
 import time
 from typing import List, Dict, Any, Optional
+
 from loguru import logger
 
 from app.config import settings
@@ -12,34 +13,77 @@ from app.models.schemas import (
     RiskMatrix,
     IncentiveInfo,
     LegalCitation,
-    StructuredLegalResponse,
 )
-
 
 class RAGPipeline:
     def __init__(self):
+
+        logger.info("PIPELINE STEP 1 - creating RetrievalEngine")
+
         self.retrieval = RetrievalEngine()
+
+        logger.info("PIPELINE STEP 2 - RetrievalEngine created")
+
+        logger.info("PIPELINE STEP 3 - creating LegalChain")
+
         self.chain = LegalChain()
+
+        logger.info("PIPELINE STEP 4 - LegalChain created")
+
+        logger.info("PIPELINE STEP 5 - creating ContextBuilder")
+
         self.context_builder = ContextBuilder()
 
+        logger.info("PIPELINE STEP 6 - ContextBuilder created")
+
     async def initialize(self):
+
+        logger.info(
+            "PIPELINE INIT STEP 1 - initializing RetrievalEngine"
+        )
+
         await self.retrieval.initialize()
+
+        logger.info(
+            "PIPELINE INIT STEP 2 - RetrievalEngine initialized"
+        )
+
         logger.info("RAGPipeline initialized")
 
-    async def query(self, question: str,
-                    subsector: Optional[str] = None,
-                    tipo_norma: Optional[str] = None,
-                    vigente: Optional[bool] = None,
-                    top_k: int = 5) -> QueryResponse:
+    async def query(
+        self,
+        question: str,
+        subsector: Optional[str] = None,
+        tipo_norma: Optional[str] = None,
+        vigente: Optional[bool] = None,
+        top_k: int = 5,
+    ) -> QueryResponse:
+
+        logger.info(
+            f"PIPELINE QUERY START - {question[:80]}"
+        )
 
         start_time = time.time()
+
         metadata_filter: Dict[str, Any] = {}
+
         if subsector:
             metadata_filter["subsector"] = subsector
+
         if tipo_norma:
             metadata_filter["tipo_norma"] = tipo_norma
+
         if vigente is not None:
             metadata_filter["vigente"] = vigente
+
+        logger.info(
+            f"PIPELINE QUERY - metadata filter: {metadata_filter}"
+        )
+
+        #
+        # RETRIEVAL
+        #
+        logger.info("PIPELINE QUERY STEP 1 - retrieval start")
 
         documents, filter_used = await self.retrieval.retrieve(
             query=question,
@@ -47,14 +91,32 @@ class RAGPipeline:
             top_k=top_k,
         )
 
+        logger.info(
+            f"PIPELINE QUERY STEP 2 - retrieval done "
+            f"(docs={len(documents)})"
+        )
+
         if not documents:
-            logger.warning("No documents retrieved for query")
-            processing_time = int((time.time() - start_time) * 1000)
+
+            logger.warning(
+                "No documents retrieved for query"
+            )
+
+            processing_time = int(
+                (time.time() - start_time) * 1000
+            )
+
             return QueryResponse(
                 question=question,
                 answer=RegulatoryAnalysis(
-                    direct_conclusion="Insufficient information in the specialized renewable energy legal corpus.",
-                    regulatory_analysis="No relevant legal documents were found in the corpus.",
+                    direct_conclusion=(
+                        "Insufficient information in the "
+                        "specialized renewable energy legal corpus."
+                    ),
+                    regulatory_analysis=(
+                        "No relevant legal documents were found "
+                        "in the corpus."
+                    ),
                     risk_matrix=RiskMatrix(),
                     incentives_detected=IncentiveInfo(),
                     insufficient_context=True,
@@ -62,15 +124,61 @@ class RAGPipeline:
                 processing_time_ms=processing_time,
             )
 
-        context = self.context_builder.build_context(documents)
-        citations = self.context_builder.extract_citations(documents)
+        #
+        # CONTEXT BUILDING
+        #
+        logger.info(
+            "PIPELINE QUERY STEP 3 - building context"
+        )
 
-        structured = await self.chain.structured_answer(question, context)
+        context = self.context_builder.build_context(
+            documents
+        )
 
+        logger.info(
+            "PIPELINE QUERY STEP 4 - extracting citations"
+        )
+
+        citations = self.context_builder.extract_citations(
+            documents
+        )
+
+        #
+        # LLM CHAIN
+        #
+        logger.info(
+            "PIPELINE QUERY STEP 5 - structured_answer start"
+        )
+
+        structured = await self.chain.structured_answer(
+            question,
+            context,
+        )
+
+        logger.info(
+            "PIPELINE QUERY STEP 6 - structured_answer done"
+        )
+
+        #
+        # RESPONSE BUILDING
+        #
         if structured.insufficient_context:
+
             analysis = RegulatoryAnalysis(
-                direct_conclusion=str(structured.direct_conclusion or "Insufficient information in the specialized renewable energy legal corpus."),
-                regulatory_analysis=str(structured.regulatory_analysis or "The corpus does not contain sufficient legal context."),
+                direct_conclusion=str(
+                    structured.direct_conclusion
+                    or (
+                        "Insufficient information in the "
+                        "specialized renewable energy legal corpus."
+                    )
+                ),
+                regulatory_analysis=str(
+                    structured.regulatory_analysis
+                    or (
+                        "The corpus does not contain sufficient "
+                        "legal context."
+                    )
+                ),
                 legal_citations=[
                     LegalCitation(
                         norma=c["norma"],
@@ -81,14 +189,26 @@ class RAGPipeline:
                     )
                     for c in citations
                 ],
-                risk_matrix=structured.risk_matrix or RiskMatrix(),
-                incentives_detected=structured.incentives_detected or IncentiveInfo(),
+                risk_matrix=(
+                    structured.risk_matrix
+                    or RiskMatrix()
+                ),
+                incentives_detected=(
+                    structured.incentives_detected
+                    or IncentiveInfo()
+                ),
                 insufficient_context=True,
             )
+
         else:
+
             analysis = RegulatoryAnalysis(
-                direct_conclusion=str(structured.direct_conclusion or ""),
-                regulatory_analysis=str(structured.regulatory_analysis or ""),
+                direct_conclusion=str(
+                    structured.direct_conclusion or ""
+                ),
+                regulatory_analysis=str(
+                    structured.regulatory_analysis or ""
+                ),
                 legal_citations=[
                     LegalCitation(
                         norma=c["norma"],
@@ -99,73 +219,44 @@ class RAGPipeline:
                     )
                     for c in citations
                 ],
-                risk_matrix=structured.risk_matrix or RiskMatrix(),
-                incentives_detected=structured.incentives_detected or IncentiveInfo(),
+                risk_matrix=(
+                    structured.risk_matrix
+                    or RiskMatrix()
+                ),
+                incentives_detected=(
+                    structured.incentives_detected
+                    or IncentiveInfo()
+                ),
                 insufficient_context=False,
             )
 
-        processing_time = int((time.time() - start_time) * 1000)
+        processing_time = int(
+            (time.time() - start_time) * 1000
+        )
+
+        logger.info(
+            f"PIPELINE QUERY COMPLETE "
+            f"({processing_time}ms)"
+        )
 
         return QueryResponse(
             question=question,
             answer=analysis,
-            sources=[d.get("id", "") for d in documents],
+            sources=[
+                d.get("id", "")
+                for d in documents
+            ],
             processing_time_ms=processing_time,
         )
 
-    @staticmethod
-    def _extract_section(text: str, section_name: str) -> str:
-        import re
-        pattern = rf"##\s*{section_name}\s*\n(.*?)(?=\n##\s|\Z)"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return text[:500]
-
-    @staticmethod
-    def _extract_risk_matrix(text: str) -> RiskMatrix:
-        import re
-        matrix = RiskMatrix()
-        patterns = {
-            "ideological_framework": r"Ideological Framework:\s*(\w+-?\w*)",
-            "constitutional_conflict_risk": r"Constitutional Conflict Risk:\s*(\w+-?\w*)",
-            "nationalization_risk": r"Nationalization Risk:\s*(\w+-?\w*)",
-            "regulatory_instability": r"Regulatory Instability:\s*(\w+-?\w*)",
-            "legal_ambiguity": r"Legal Ambiguity:\s*(\w+-?\w*)",
-            "arbitration_protection": r"Arbitration Protection:\s*(\w+-?\w*)",
-        }
-        for field, pattern in patterns.items():
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                setattr(matrix, field, match.group(1))
-        return matrix
-
-    @staticmethod
-    def _extract_incentives(text: str, documents: List[Dict[str, Any]]) -> IncentiveInfo:
-        import re
-        has_incentive = re.search(r"Status:\s*(Active|Pending)", text, re.IGNORECASE)
-
-        if has_incentive:
-            type_match = re.search(r"Type:\s*([^\n]+)", text)
-            basis_match = re.search(r"Legal Basis:\s*([^\n]+)", text)
-            return IncentiveInfo(
-                detected=True,
-                type=type_match.group(1).strip() if type_match else None,
-                description=basis_match.group(1).strip() if basis_match else None,
-                articles=[],
-            )
-
-        for doc in documents:
-            payload = doc.get("payload", doc)
-            if payload.get("renewable_incentive", False):
-                return IncentiveInfo(
-                    detected=True,
-                    type="Renewable Energy Incentive",
-                    description=f"Found in {payload.get('tipo_norma', '')} {payload.get('norma_id', '')}",
-                    articles=[payload.get("articulo", "")],
-                )
-
-        return IncentiveInfo()
-
     async def close(self):
+
+        logger.info(
+            "PIPELINE CLOSE - closing RetrievalEngine"
+        )
+
         await self.retrieval.close()
+
+        logger.info(
+            "PIPELINE CLOSE - RetrievalEngine closed"
+        )

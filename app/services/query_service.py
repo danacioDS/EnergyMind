@@ -1,14 +1,26 @@
+import asyncio
 import time
 from typing import Optional, AsyncGenerator
+
 from loguru import logger
 
 from app.rag.pipeline import RAGPipeline
 from app.agents.graph import LegalAgentGraph
 from app.models.schemas import (
-    QueryResponse, QueryRequest, RegulatoryAnalysis, LegalCitation, RiskMatrix, IncentiveInfo,
+    QueryResponse,
+    QueryRequest,
+    RegulatoryAnalysis,
+    LegalCitation,
+    RiskMatrix,
+    IncentiveInfo,
 )
 from app.services.sse_manager import SSEStreamManager
-from app.services.cache import init_redis, close_redis, get_cached, set_cached
+from app.services.cache import (
+    init_redis,
+    close_redis,
+    get_cached,
+    set_cached,
+)
 from app.config import settings
 
 
@@ -16,185 +28,152 @@ class QueryService:
     def __init__(self):
         self.pipeline: Optional[RAGPipeline] = None
         self.agent: Optional[LegalAgentGraph] = None
+        self.redis_enabled = False
 
     async def initialize(self):
-        self.pipeline = RAGPipeline()
-        await self.pipeline.initialize()
-        self.agent = LegalAgentGraph()
-        await self.agent.initialize()
+        logger.info("QS STEP 1 - starting QueryService.initialize()")
+
+        total_timer = time.perf_counter()
+
+        #
+        # PIPELINE
+        #
         try:
-            await init_redis(host=settings.redis_host, port=settings.redis_port)
-            logger.info("Redis cache initialized")
-        except Exception as e:
-            logger.warning(f"Redis not available, cache disabled: {e}")
-        logger.info("QueryService initialized (pipeline + agent)")
+            logger.info("QS STEP 2 - creating RAGPipeline")
 
-    async def process_query(self, request: QueryRequest) -> QueryResponse:
-        if not self.pipeline or not self.agent:
-            raise RuntimeError("QueryService not initialized")
+            t = time.perf_counter()
 
-        cached = await get_cached(request.question, request.subsector)
-        if cached is not None:
-            logger.info(f"Cache HIT for: {request.question[:60]}...")
-            response = QueryResponse(**cached)
-            response.cached = True
-            return response
+            self.pipeline = RAGPipeline()
 
-        if request.use_agent:
-            response = await self._process_with_agent(request)
-        else:
-            response = await self._process_with_pipeline(request)
+            logger.info(
+                f"QS STEP 3 - RAGPipeline created "
+                f"({time.perf_counter() - t:.2f}s)"
+            )
+
+            logger.info("QS STEP 4 - initializing RAGPipeline")
+
+            t = time.perf_counter()
+
+            await asyncio.wait_for(
+                self.pipeline.initialize(),
+                timeout=180,
+            )
+
+            logger.info(
+                f"QS STEP 5 - RAGPipeline initialized "
+                f"({time.perf_counter() - t:.2f}s)"
+            )
+
+        except asyncio.TimeoutError:
+            logger.exception(
+                "RAGPipeline initialization timeout"
+            )
+            raise
+
+        except Exception:
+            logger.exception(
+                "Failed initializing RAGPipeline"
+            )
+            raise
+
+        #
+        # AGENT
+        #
+        try:
+            logger.info("QS STEP 6 - creating LegalAgentGraph")
+
+            t = time.perf_counter()
+
+            self.agent = LegalAgentGraph()
+
+            logger.info(
+                f"QS STEP 7 - LegalAgentGraph created "
+                f"({time.perf_counter() - t:.2f}s)"
+            )
+
+            logger.info("QS STEP 8 - initializing LegalAgentGraph")
+
+            t = time.perf_counter()
+
+            await asyncio.wait_for(
+                self.agent.initialize(),
+                timeout=120,
+            )
+
+            logger.info(
+                f"QS STEP 9 - LegalAgentGraph initialized "
+                f"({time.perf_counter() - t:.2f}s)"
+            )
+
+        except asyncio.TimeoutError:
+            logger.exception(
+                "LegalAgentGraph initialization timeout"
+            )
+            raise
+
+        except Exception:
+            logger.exception(
+                "Failed initializing LegalAgentGraph"
+            )
+            raise
+
+        #
+        # REDIS
+        #
+        logger.info("QS STEP 10 - initializing Redis")
 
         try:
-            await set_cached(
-                request.question, request.subsector,
-                response.model_dump(),
-            )
-        except Exception as e:
-            logger.debug(f"Cache set failed: {e}")
+            t = time.perf_counter()
 
-        return response
-
-    async def process_query_streaming(
-        self, request: QueryRequest, stream: SSEStreamManager,
-    ) -> AsyncGenerator[str, None]:
-        if not self.pipeline or not self.agent:
-            raise RuntimeError("QueryService not initialized")
-
-        start_time = time.time()
-
-        try:
-            cached = await get_cached(request.question, request.subsector)
-            if cached is not None:
-                resp = QueryResponse(**cached)
-                yield stream.emit("analysis", {"direct_conclusion": resp.answer.direct_conclusion[:500]})
-                yield stream.emit("risk", {"matrix": resp.answer.risk_matrix.model_dump()})
-                yield stream.emit("incentives", {"detected": resp.answer.incentives_detected.model_dump()})
-                yield stream.emit("complete", {"processing_time_ms": 0, "sources": resp.sources, "cached": True})
-                return
-
-            metadata_filter = {}
-            if request.subsector:
-                metadata_filter["subsector"] = request.subsector
-            if request.tipo_norma:
-                metadata_filter["tipo_norma"] = request.tipo_norma
-            if request.vigente is not None:
-                metadata_filter["vigente"] = request.vigente
-
-            documents, _ = await self.pipeline.retrieval.retrieve(
-                query=request.question,
-                metadata_filter=metadata_filter,
-                top_k=request.top_k or 5,
-            )
-            yield stream.emit("retrieval_complete", {"source_count": len(documents)})
-
-            if not documents:
-                processing_time_ms = int((time.time() - start_time) * 1000)
-                yield stream.emit("insufficient_context", {})
-                yield stream.emit("complete", {"processing_time_ms": processing_time_ms, "sources": []})
-                return
-
-            context = self.pipeline.context_builder.build_context(documents)
-            citations = self.pipeline.context_builder.extract_citations(documents)
-
-            structured = await self.pipeline.chain.structured_answer(request.question, context)
-
-            yield stream.emit("analysis", {"direct_conclusion": structured.direct_conclusion[:500]})
-            yield stream.emit("risk", {"matrix": structured.risk_matrix.model_dump()})
-            yield stream.emit("incentives", {"detected": structured.incentives_detected.model_dump()})
-
-            citation_data = [
-                {
-                    "norma": c["norma"],
-                    "articulo": c["articulo"],
-                    "texto": c["texto"][:500],
-                    "tipo_norma": c["tipo_norma"],
-                    "risk_flags": c.get("risk_flags", []),
-                }
-                for c in citations
-            ]
-            yield stream.emit("citations", {"citations": citation_data})
-            processing_time_ms = int((time.time() - start_time) * 1000)
-            yield stream.emit("complete", {"processing_time_ms": processing_time_ms, "sources": [d.get("id", "") for d in documents]})
-
-        except Exception as e:
-            logger.error(f"Streaming query failed: {e}")
-            yield stream.emit("error", {"detail": str(e)})
-
-    async def _process_with_pipeline(self, request: QueryRequest) -> QueryResponse:
-        response = await self.pipeline.query(
-            question=request.question,
-            subsector=request.subsector,
-            tipo_norma=request.tipo_norma,
-            vigente=request.vigente,
-            top_k=request.top_k or 5,
-        )
-        logger.info(f"Pipeline query: {request.question[:60]}... -> {response.processing_time_ms}ms")
-        return response
-
-    async def _process_with_agent(self, request: QueryRequest) -> QueryResponse:
-        start_time = time.time()
-
-        result = await self.agent.run(
-            question=request.question,
-            subsector=request.subsector,
-            tipo_norma=request.tipo_norma,
-        )
-
-        processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"Agent query (iter {result.get('iteration', 0)}): {request.question[:60]}... -> {processing_time}ms")
-
-        citations = result.get("citations", [])
-        sr = result.get("structured_response")
-
-        if sr:
-            analysis = RegulatoryAnalysis(
-                direct_conclusion=sr.direct_conclusion,
-                regulatory_analysis=sr.regulatory_analysis,
-                legal_citations=[
-                    LegalCitation(
-                        norma=c.get("norma", ""),
-                        articulo=c.get("articulo", ""),
-                        texto=c.get("texto", "")[:500],
-                        tipo_norma=c.get("tipo_norma", ""),
-                        risk_flags=c.get("risk_flags", []),
-                    )
-                    for c in citations
-                ],
-                risk_matrix=sr.risk_matrix or RiskMatrix(),
-                incentives_detected=sr.incentives_detected or IncentiveInfo(),
-                insufficient_context=sr.insufficient_context,
-            )
-        else:
-            final_text = result.get("final_answer", "")
-            analysis = RegulatoryAnalysis(
-                direct_conclusion=final_text[:500],
-                regulatory_analysis="",
-                legal_citations=[
-                    LegalCitation(
-                        norma=c.get("norma", ""),
-                        articulo=c.get("articulo", ""),
-                        texto=c.get("texto", "")[:500],
-                        tipo_norma=c.get("tipo_norma", ""),
-                        risk_flags=c.get("risk_flags", []),
-                    )
-                    for c in citations
-                ],
-                risk_matrix=RiskMatrix(),
-                incentives_detected=IncentiveInfo(),
-                insufficient_context=not bool(result.get("documents")),
+            await asyncio.wait_for(
+                init_redis(
+                    host=settings.redis_host,
+                    port=settings.redis_port,
+                ),
+                timeout=15,
             )
 
-        return QueryResponse(
-            question=request.question,
-            answer=analysis,
-            sources=[d.get("id", "") for d in result.get("documents", [])],
-            processing_time_ms=processing_time,
+            self.redis_enabled = True
+
+            logger.info(
+                f"QS STEP 11 - Redis initialized "
+                f"({time.perf_counter() - t:.2f}s)"
+            )
+
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Redis initialization timeout — cache disabled"
+            )
+
+        except Exception:
+            logger.exception(
+                "Redis unavailable — cache disabled"
+            )
+
+        logger.info(
+            f"QueryService initialized successfully "
+            f"({time.perf_counter() - total_timer:.2f}s)"
         )
 
     async def close(self):
-        if self.pipeline:
-            await self.pipeline.close()
-        if self.agent:
-            await self.agent.close()
-        await close_redis()
+        logger.info("Closing QueryService")
+
+        try:
+            if self.pipeline:
+                await self.pipeline.close()
+
+        except Exception:
+            logger.exception(
+                "Error closing pipeline"
+            )
+
+        try:
+            if self.redis_enabled:
+                await close_redis()
+
+        except Exception:
+            logger.exception(
+                "Error closing Redis"
+            )
+
+        logger.info("QueryService closed successfully")

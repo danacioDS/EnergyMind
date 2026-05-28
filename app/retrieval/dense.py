@@ -2,8 +2,7 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 
 from app.config import settings
-from app.services.embedding_service import get_embedder
-
+from core.embeddings import get_embedder
 
 class DenseRetriever:
     def __init__(self):
