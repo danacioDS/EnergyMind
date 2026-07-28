@@ -15,10 +15,6 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-
-        # IMPORTANT:
-        # Ignore unknown variables from .env
-        # Prevents crashes with unused vars like NEO4J_*
         extra="ignore",
     )
 
@@ -26,15 +22,9 @@ class Settings(BaseSettings):
     # QDRANT
     # =========================================================
 
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
-    qdrant_collection: str = "lexenergy_bolivia"
+    qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
-
-    @computed_field
-    @property
-    def qdrant_url(self) -> str:
-        return f"http://{self.qdrant_host}:{self.qdrant_port}"
+    qdrant_collection: str = "energymind"
 
     # =========================================================
     # EMBEDDINGS
@@ -50,6 +40,7 @@ class Settings(BaseSettings):
 
     reranker_model: str = "BAAI/bge-reranker-large"
     reranker_device: str = "cpu"
+    reranker_top_k: int = 5
 
     # =========================================================
     # LLM
@@ -57,11 +48,27 @@ class Settings(BaseSettings):
 
     llm_model: str = "llama3.1"
     llm_provider: str = "ollama"
+    llm_fallback_provider: Optional[str] = None
 
     ollama_base_url: str = "http://localhost:11434"
 
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o"
+    
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-2.0-flash"
+
+    # =========================================================
+    # GROQ
+    # =========================================================
+    
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.3-70b-versatile"
+
+    # =========================================================
+    # CEREBRAS - Fallback 1
+    # =========================================================
+    
 
     # =========================================================
     # LANGCHAIN
@@ -125,7 +132,6 @@ class Settings(BaseSettings):
     bm25_top_k: int = 20
     dense_top_k: int = 20
     final_top_k: int = 5
-    reranker_top_k: int = 5
     hybrid_alpha: float = 0.5
 
     # =========================================================

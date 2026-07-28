@@ -312,3 +312,14 @@ lexenergy/
 ## 📜 License
 
 MIT
+
+
+# Crear entorno virtual
+python3 -m venv venv
+
+# Activar entorno virtual
+source venv/bin/activate
+
+# Verificar que está activo
+which python
+# → Debe mostrar: /home/daniel/repo_lab/EnergyMind/venv/bin/python

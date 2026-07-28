@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, AsyncGenerator, Dict, Any
 
 from loguru import logger
 
@@ -78,3 +78,62 @@ class QueryService:
             except Exception:
                 logger.exception("Error closing Redis")
         logger.info("QueryService closed")
+
+    async def process_query(self, request: QueryRequest) -> QueryResponse:
+        import time
+        start_time = time.perf_counter()
+        
+        cache_key = self._get_cache_key(request)
+        
+        if self.redis_enabled:
+            try:
+                cached = await get_cached(cache_key)
+                if cached:
+                    logger.info(f"✅ Cache hit para: {request.question[:50]}...")
+                    return QueryResponse(**cached)
+            except Exception as e:
+                logger.warning(f"Error al leer caché: {e}")
+        
+        logger.info(f"📝 Procesando query: {request.question[:50]}...")
+        
+        try:
+            if getattr(request, 'use_agent', False):
+                response = await self.agent.run(request)
+            else:
+                response = await self.pipeline.query(request)
+            
+            if self.redis_enabled:
+                try:
+                    await set_cached(
+                        cache_key,
+                        response.dict() if hasattr(response, 'dict') else response,
+                        ttl=3600
+                    )
+                except Exception as e:
+                    logger.warning(f"Error al guardar en caché: {e}")
+            
+            processing_time = int((time.perf_counter() - start_time) * 1000)
+            if hasattr(response, 'processing_time_ms'):
+                response.processing_time_ms = processing_time
+            
+            logger.info(f"✅ Query completada en {processing_time}ms")
+            return response
+            
+        except Exception as e:
+            logger.exception(f"❌ Error procesando query: {e}")
+            raise
+
+    async def process_query_streaming(self, request: QueryRequest) -> AsyncGenerator[Dict[str, Any], None]:
+        """Procesa una consulta legal con streaming"""
+        logger.info(f"📝 Streaming query: {request.question[:50]}...")
+        
+        # Usar el pipeline directamente
+        async for event in self.pipeline.query_stream(request):
+            yield event
+
+    def _get_cache_key(self, request: QueryRequest) -> str:
+        import hashlib
+        import json
+        
+        content = request.question + json.dumps(getattr(request, 'metadata_filter', {}))
+        return f"query:{hashlib.sha256(content.encode()).hexdigest()}"

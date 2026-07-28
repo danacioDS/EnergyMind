@@ -2,381 +2,351 @@
 
 ## Overview
 
-LexEnergy Bolivia is a **Legal RAG (Retrieval-Augmented Generation)** platform that answers questions about Bolivian renewable energy regulation. Users submit legal questions (Spanish/English) and receive structured answers with citations, risk analysis, and incentive detection.
-
----
-
-## System Context
+LexEnergy Bolivia is a **Legal RAG (Retrieval-Augmented Generation)** platform that answers legal questions about renewable energy investments in Bolivia. It ingests Bolivian legal texts, indexes them in a vector database, and generates structured legal analysis using an LLM.
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Browser   │────▶│  Next.js 16  │────▶│  FastAPI    │
-│ (React 19)  │◀────│  (Port 3000) │◀────│  (Port 8000)│
-└─────────────┘     └──────────────┘     └──────┬──────┘
-                                                │
-                    ┌───────────────────────────┼───────────┐
-                    │                           │           │
-                    ▼                           ▼           ▼
-              ┌──────────┐              ┌──────────┐  ┌───────┐
-              │  Qdrant  │              │  Redis   │  │Ollama │
-              │(VectorDB)│              │ (Cache)  │  │/OpenAI│
-              └──────────┘              └──────────┘  └───────┘
-```
-
----
-
-## Backend Architecture
-
-### Entry Points (defined in `pyproject.toml`)
-
-| Command | File | Purpose |
-|---------|------|---------|
-| `lexenergy-api` | `app/main.py` (module-level `app`) | FastAPI ASGI application (uvicorn) |
-| `lexenergy-ingest` | `ingestion.pipeline:run_ingestion` | Runs document indexing |
-
-### API Routes (`app/api/routes.py`)
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/api/v1/query` | Blocking legal RAG query |
-| POST | `/api/v1/query/stream` | Streaming SSE query |
-| GET | `/api/v1/health` | Health check |
-| POST | `/api/v1/ingest` | Trigger ingestion |
-| GET | `/api/v1/corpus/stats` | Corpus statistics |
-
-### Request Flow
-
-```
-POST /api/v1/query
-        │
-        ▼
-QueryService.process_query()
-        │
-        ├── use_agent=false ────► RAGPipeline.query()
-        │                              │
-        │                              ├── RetrievalEngine.retrieve()
-        │                              │     ├── MetadataFilter (infer filters from query text)
-        │                              │     ├── BM25 (sparse, thread-pooled via asyncio.to_thread)
-        │                              │     ├── Qdrant (dense vector search, BGE-M3 embeddings)
-        │                              │     ├── Hybrid Fusion (adaptive alpha: 0.7/0.3)
-        │                              │     └── Cross-Encoder Reranker (BGE-reranker-large)
-        │                              │
-        │                              ├── ContextBuilder.build_context()
-        │                              │     └── Format docs → LLM context with metadata headers
-        │                              │
-        │                              └── LegalChain.structured_answer()
-        │                                    └── LLM → StructuredLegalResponse
-        │                                          ├── direct_conclusion
-        │                                          ├── regulatory_analysis
-        │                                          ├── risk_matrix
-        │                                          ├── incentives_detected
-        │                                          └── insufficient_context
-        │
-        └── use_agent=true ────► LegalAgentGraph.run()
-                                      └── LangGraph state machine
-                                            retrieve → analyze → [check_refinement]
-                                              │                        │
-                                              │   sufficient ─────────┤
-                                              │                        │
-                                              │   insufficient ───────┘
-                                              │      (refine → retrieve, up to 3 iterations)
-                                              │
-                                              └── risk_assess → finalize
-```
-
-### SSE Streaming Flow (`POST /api/v1/query/stream`)
-
-```
-SSE Events (progressive):
-  start                 →  { correlation_id }
-  retrieval             →  { status }
-  analysis              →  { direct_conclusion }
-  risk                  →  { matrix }
-  incentives            →  { detected }
-  heartbeat             →  (keep-alive ping)
-  insufficient_context  →  (corpus lacks info)
-  complete              →  { processing_time_ms, sources }
-  error                 →  { detail, stage }
+┌─────────────────────────────────────────────────────────────────┐
+│                        Frontend (Next.js 16)                    │
+│   Chat UI  ·  SSE Streaming  ·  Filter Panel  ·  Stats View   │
+│                           :3000                                  │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │ HTTP / SSE
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     API Layer (FastAPI)                          │
+│   /query  ·  /query/stream  ·  /ingest  ·  /corpus/stats       │
+│                           :8000                                  │
+└──────────┬──────────────────────────────┬───────────────────────┘
+           │                              │
+           ▼                              ▼
+┌──────────────────────┐   ┌──────────────────────────────────────┐
+│    Query Service     │   │         Ingestion Pipeline           │
+│  (orchestration)     │   │  parse → normalize → embed → upsert  │
+└──────┬───────┬───────┘   └──────────────────────────────────────┘
+       │       │
+       ▼       ▼
+┌────────────┐ ┌─────────────┐
+│ RAG Pipeline│ │ Legal Agent │
+│  (direct)   │ │ (LangGraph) │
+└──────┬──────┘ └──────┬──────┘
+       │               │
+       ▼               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Retrieval Engine                               │
+│                                                                  │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────────┐ │
+│  │ Metadata │  │  BM25    │  │  Dense   │  │    Reranker     │ │
+│  │ Filter   │  │ (sparse) │  │ (cosine) │  │ (cross-encoder) │ │
+│  └─────────┘  └──────────┘  └──────────┘  └─────────────────┘ │
+│                                                                  │
+│  Hybrid Fusion: α·BM25 + (1-α)·Dense  (adaptive α)             │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Infrastructure                              │
+│                                                                  │
+│  ┌──────────┐  ┌───────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │  Qdrant  │  │ Redis │  │  Ollama  │  │   BGE-M3 / BGE   │  │
+│  │ vectors  │  │ cache │  │   LLM    │  │   reranker-large  │  │
+│  │  :6333   │  │ :6379 │  │ :11434   │  │  (local models)   │  │
+│  └──────────┘  └───────┘  └──────────┘  └──────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Directory Layout
+## Components
+
+### 1. Frontend (`frontend/`)
+
+| Technology | Purpose |
+|------------|---------|
+| Next.js 16 | React framework with App Router |
+| React 19 | UI library |
+| shadcn/ui (Radix) | Component primitives |
+| Tailwind CSS v4 | Styling |
+| recharts | Corpus stats charts |
+| react-markdown | LLM response rendering |
+
+**Key files:**
+- `src/app/page.tsx` — Chat interface entry
+- `src/components/chat/chat-interface.tsx` — Main chat UI with SSE streaming
+- `src/components/chat/message-bubble.tsx` — Message rendering (markdown, citations, risk matrix, incentives)
+- `src/lib/api.ts` — Backend API client with SSE retry logic
+- `src/lib/types.ts` — TypeScript type definitions
+
+**API proxy:** `next.config.ts` rewrites `/api/v1/*` → `http://localhost:8000/api/v1/*`
+
+### 2. API Layer (`app/api/routes.py`)
+
+FastAPI router with endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/query` | Synchronous query → `QueryResponse` |
+| `POST` | `/api/v1/query/stream` | SSE streaming query |
+| `GET` | `/api/v1/health` | Liveness check |
+| `GET` | `/api/v1/health/ready` | Readiness check |
+| `POST` | `/api/v1/ingest` | Trigger document ingestion |
+| `GET` | `/api/v1/corpus/stats` | Corpus statistics |
+
+**Middleware:**
+- CORS (configurable origins)
+- Correlation ID (UUID-based, injected into logs)
+
+### 3. Application Lifecycle (`app/main.py`)
 
 ```
-app/                          # Backend application
-├── main.py                   # FastAPI app, lifespan, middleware
-├── config.py                 # Pydantic Settings (env-based)
-├── api/routes.py             # API endpoints
-├── models/
-│   ├── schemas.py            # Pydantic request/response models
-│   └── legal_unit.py         # LegalUnit data model
-├── prompts/legal_prompts.py  # Spanish legal system prompts
-├── rag/
-│   ├── pipeline.py           # RAGPipeline orchestrator
-│   ├── chain.py              # LegalChain (LLM calls, structured output)
-│   └── context_builder.py    # Format retrieved docs → LLM context
-├── retrieval/
-│   ├── engine.py             # RetrievalEngine (orchestrates all retrievers)
-│   ├── bm25.py               # BM25Retriever (sparse, jieba tokenization)
-│   ├── dense.py              # DenseRetriever (cosine similarity, BGE-M3)
-│   ├── hybrid.py             # HybridRetriever (score fusion, adaptive alpha)
-│   ├── reranker.py           # Reranker (BGE-reranker-large)
-│   └── metadata_filter.py    # Infer Qdrant filters from query text
-├── services/
-│   ├── query_service.py      # QueryService (lifecycle, orchestration)
-│   ├── cache.py              # Redis-backed cache (SHA256 key, 1h TTL)
-│   └── sse_manager.py        # SSE event formatting
-├── agents/
-│   └── graph.py              # LangGraph agent with refinement loop
-
-core/
-└── embeddings.py             # Singleton SentenceTransformer (BGE-M3), shared across QdrantStore and DenseRetriever
-
-cache/                        # BM25 index persistence (bm25_index.pkl)
-
-vectorstore/
-└── qdrant_client.py          # QdrantStore (collection mgmt, upsert, search)
-
-ingestion/                    # Document ingestion pipeline
-├── pipeline.py               # IngestionPipeline
-├── parsing/legal_parser.py   # LegalDocumentParser
-├── parsing/regex_parser.py   # Regex-based article parser
-├── normalization/normalizer.py
-├── metadata/extractor.py
-├── lexivox/scraper.py        # LexiVox corpus scraper
-└── aetn/scraper.py           # AETN resolutions scraper
-
-corpus/                       # Legal dataset
-├── raw/                      # Raw .txt files
-└── normalized/all_units.json # Normalized corpus units
-
-frontend/                     # Next.js 16 / React 19
-└── src/
-    ├── app/page.tsx          # ChatInterface
-    ├── components/
-    │   ├── chat/             # ChatInterface, MessageBubble
-    │   ├── analysis/         # LegalCitations, IncentivesPanel, RiskMatrix
-    │   ├── layout/           # Header, FilterPanel
-    │   └── ui/               # shadcn/ui primitives
-    └── lib/
-        ├── api.ts            # Backend API client
-        ├── types.ts          # TypeScript types
-        └── utils.ts          # cn() utility
-
-docker/
-├── docker-compose.yml        # Qdrant + Redis + API + Frontend
-└── Dockerfile                # Backend image
-
-tests/
-├── test_api.py
-├── test_ingestion.py
-├── test_retrieval.py
-├── test_retrieval_golden.py
-└── test_search.py
-
-evaluation/
-└── run_ragas_eval.py
+FastAPI startup
+    │
+    ├── setup_logging()          # loguru config (JSON or human-readable)
+    ├── ResourceManager()        # lightweight, no I/O yet
+    ├── create_task(_background_init)  # non-blocking warmup
+    │       │
+    │       ├── rm.warmup()
+    │       │     ├── asyncio.to_thread(load_embedder)   # BGE-M3
+    │       │     └── asyncio.to_thread(load_qdrant)     # Qdrant client
+    │       │
+    │       ├── QueryService(rm).initialize()
+    │       │     ├── RAGPipeline(qdrant).initialize()
+    │       │     │     ├── RetrievalEngine(qdrant).initialize()
+    │       │     │     │     ├── load BM25 index (or build from corpus)
+    │       │     │     │     └── load reranker model
+    │       │     │     └── LegalChain()  (LLM client)
+    │       │     ├── LegalAgentGraph().initialize()
+    │       │     │     └── RetrievalEngine().initialize()  ← creates separate Qdrant connection
+    │       │     └── init_redis()  (optional, graceful failure)
+    │       │
+    │       └── app.state.ready = True
+    │
+    └── yield (serve requests)
+            │
+            └── shutdown: cancel warmup, close QueryService, close ResourceManager
 ```
 
----
+### 4. Query Service (`app/services/query_service.py`)
 
-## Retrieval Pipeline (in detail)
+Orchestrates the query lifecycle:
+- Holds the `RAGPipeline` and `LegalAgentGraph` instances
+- Manages Redis cache (SHA256 keys, 1h TTL)
+- **Note:** Currently missing `process_query()` and `process_query_streaming()` methods (see report.md)
 
-```
-                    ┌──────────────────┐
-                    │   User Query     │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │ MetadataFilter   │  ← Infer subsector, risk flags,
-                    │ infer_from_query │     renewable intent from query
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                              ▼
-    ┌─────────────────┐           ┌───────────────────┐
-    │  BM25Retriever  │           │  QdrantStore      │
-    │  (sparse, CPU)  │           │  (dense, GPU CPU)  │
-    │  jieba tokenize │           │  BGE-M3 embedding  │
-    │  asyncio thread │           │  cosine similarity │
-    └────────┬────────┘           └─────────┬─────────┘
-              │                              │
-              └──────────┬───────────────────┘
-                         ▼
-              ┌──────────────────┐
-              │  HybridRetriever │  ← Adaptive alpha fusion
-              │  score fusion    │     (0.7 BM25 for codes,
-              │                  │      0.3 dense for concepts)
-              └────────┬─────────┘
-                         │
-                         ▼
-              ┌──────────────────┐
-              │    Reranker      │  ← BGE-reranker-large
-              │  cross-encoder   │     (re-rank top-k)
-              └────────┬─────────┘
-                         │
-                         ▼
-              ┌──────────────────┐
-              │   Top-K docs     │  → LLM context
-              └──────────────────┘
-```
+### 5. RAG Pipeline (`app/rag/pipeline.py`)
 
-**Metadata filter inference** (`app/retrieval/metadata_filter.py`):
-- Keywords like `"solar"` → `subsector=Solar`
-- `"incentivo"`, `"beneficio"` → `renewable_incentive=True`
-- `"riesgo"`, `"nacionalización"` → risk flag filters
-- `"DS 5503"` → `norma_id=5503`
-
-**Adaptive hybrid alpha** (`app/retrieval/hybrid.py`):
-- `α = 0.7` for exact legal code queries (BM25-biased)
-- `α = 0.3` for conceptual questions (dense-biased)
-
----
-
-## Agentic Refinement Loop
-
-```
-                     ┌──────────┐
-                     │ retrieve │
-                     └────┬─────┘
-                          │
-                          ▼
-                     ┌──────────┐
-              ┌─────│ analyze  │─────┐
-              │     └────┬─────┘     │
-              │          │           │
-              ▼          │           ▼
-        ┌────────┐      │     ┌──────────┐
-        │ refine │◀─────┘     │risk_assess│
-        │(rephrase│           └────┬──────┘
-        │ query)  │                │
-        └────┬────┘                ▼
-             │              ┌──────────┐
-             └─────────────▶│ finalize │
-                            └──────────┘
-```
-
-- Maximum 3 refinement iterations
-- Refinement rephrases query using Spanish legal terminology
-- `_check_refinement` routes to `risk_assess` or `refine` based on `insufficient_context`
-
----
-
-## LLM Integration
-
-Two providers via `LegalChain._init_llm()`:
-
-| Provider | Class | Config |
-|----------|-------|--------|
-| Ollama (local) | `ChatOllama` | `llama3.1`, temperature=0.1, `num_predict=4096` |
-| OpenAI | `ChatOpenAI` | `gpt-4o`, temperature=0.1 |
-
-**Chains**:
-- `qa_chain` → `StrOutputParser` (free-text answer)
-- `risk_chain` → `StrOutputParser` (risk analysis)
-- `structured_chain` → `with_structured_output(StructuredLegalResponse)` (JSON mode for Ollama, tool calling for OpenAI)
-
----
-
-## Legal Corpus
-
-| Source | Type | Norm ID | Flags |
-|--------|------|---------|-------|
-| Constitución Política del Estado | Constitución | CPE | Constitutional Hierarchy |
-| Ley de Electricidad No. 1604/1994 | Ley | 1604 | Market Framework |
-| Ley No. 943 (modificaciones) | Ley | 943 | — |
-| DS No. 5503/2025 | Decreto Supremo | 5503 | Regulatory Instability, Nationalization Risk |
-
-Each legal document is parsed into **articles** as atomic units. Articles carry metadata: `tipo_norma`, `norma_id`, `articulo`, `subsector`, `enfoque`, `risk_flags`, `renewable_incentive`, `vigente`.
-
----
-
-## Data Models
+Direct query path (no agent refinement):
 
 ```
 QueryRequest
-├── question: str
-├── subsector: Optional[str]
-├── tipo_norma: Optional[str]
-├── vigente: Optional[bool]
-├── top_k: Optional[int] (default 5)
-└── use_agent: Optional[bool] (default false)
+    │
+    ▼
+RetrievalEngine.retrieve(query, metadata_filter, top_k)
+    │
+    ▼
+ContextBuilder.build_context(documents)     ← formats legal articles for LLM
+    │
+    ▼
+LegalChain.structured_answer(question, context)  ← LLM call
+    │
+    ▼
+QueryResponse (RegulatoryAnalysis + RiskMatrix + IncentiveInfo)
+```
 
-StructuredLegalResponse (LLM output)
-├── direct_conclusion: str
-├── regulatory_analysis: str
-├── risk_matrix: RiskMatrix
-│   ├── ideological_framework
-│   ├── constitutional_conflict_risk
-│   ├── nationalization_risk
-│   ├── regulatory_instability
-│   ├── legal_ambiguity
-│   └── arbitration_protection
-├── incentives_detected: IncentiveInfo
-│   ├── detected: bool
-│   ├── type: Optional[str]
-│   ├── articles: list[str]
-│   └── description: Optional[str]
-└── insufficient_context: bool
+### 6. Legal Agent (`app/agents/graph.py`)
 
-QueryResponse
-├── question: str
-├── answer: RegulatoryAnalysis
-│   ├── direct_conclusion
-│   ├── regulatory_analysis
-│   ├── legal_citations: list[LegalCitation]
-│   ├── risk_matrix
-│   ├── incentives_detected
-│   └── insufficient_context
-├── sources: list[str]
-├── processing_time_ms: Optional[int]
-└── cached: bool
+LangGraph-based agent with iterative refinement:
+
+```
+retrieve → analyze → [check: insufficient_context?]
+                          │                    │
+                         YES                   NO
+                          │                    │
+                        refine ──→ retrieve    risk_assess → finalize
+                          ↑         (loop)
+                     iteration < 3
+```
+
+- Up to 3 refinement iterations
+- Uses LLM to rephrase queries with Spanish legal terminology
+- Separate `RetrievalEngine` instance (bug — should share connection)
+
+### 7. Retrieval Engine (`app/retrieval/`)
+
+The core retrieval pipeline:
+
+```
+User Query
+    │
+    ├──► MetadataFilter.infer_from_query()
+    │       Extracts subsector, tipo_norma, enfoque, vigente from query text
+    │
+    ├──► BM25Retriever.search()               [sparse keyword match]
+    │       jieba tokenization → BM25Okapi scoring
+    │       CPU-bound work offloaded via asyncio.to_thread()
+    │
+    ├──► QdrantStore.search()                 [dense semantic search]
+    │       BGE-M3 embedding → cosine similarity via Qdrant
+    │
+    ├──► HybridRetriever._fusion()            [score fusion]
+    │       Adaptive α: 0.7 for code queries, 0.3 for conceptual
+    │       Min-max normalized scores
+    │
+    └──► Reranker.rerank()                    [cross-encoder reranking]
+            FlagEmbedding FlagReranker → CrossEncoder fallback
+```
+
+**Adaptive alpha logic:**
+- `α = 0.7` (BM25-biased) when query matches code patterns: `artículo`, `ley N`, `decreto N`
+- `α = 0.3` (dense-biased) when query matches conceptual patterns: `qué es`, `riesgo`, `definición`
+- `α = 0.5` (balanced) otherwise
+
+### 8. Vector Store (`vectorstore/qdrant_client.py`)
+
+Qdrant wrapper providing:
+- Collection management (auto-creates with 1024-dim cosine vectors)
+- Payload indexes on: `tipo_norma`, `norma_id`, `subsector`, `enfoque`, `sector`, `vigente`, `renewable_incentive`
+- Upsert (batched, 32 points/batch)
+- Search with optional metadata filters
+- Scroll (paginated full collection read)
+
+### 9. Ingestion Pipeline (`ingestion/pipeline.py`)
+
+```
+CORPUS_DEFINITIONS (4 sources)
+    │
+    ▼
+LegalDocumentParser.parse_file()
+    ├── LegalTextNormalizer (normalize whitespace, unicode)
+    ├── Article-level splitting (atomic legal units)
+    └── Regex parsing (ideological markers)
+    │
+    ▼
+LegalUnit objects → all_units.json
+    │
+    ▼
+QdrantStore.upsert_units()
+    ├── BGE-M3 batch embedding (1024 dims)
+    └── PointStruct with full metadata payload
+```
+
+**Corpus sources:**
+
+| File | Tipo Norma | ID | Content |
+|------|------------|-----|---------|
+| `constitucion_bolivia_articulos_seleccionados.txt` | Constitucion | CPE | Selected constitutional articles |
+| `ley_1604_1994.txt` | Ley | 1604 | Electricity Law |
+| `ley_943_modificaciones.txt` | Ley | 943 | Electricity Law modifications |
+| `ds_5503_2025.txt` | Decreto Supremo | 5503 | Extraordinary Investment Regime |
+| `aetn_resoluciones_muestra.txt` | Resolucion AETN | — | AETN resolutions (in config but not in CORPUS_DEFINITIONS) |
+
+### 10. Models
+
+**Embeddings:** `BAAI/bge-m3` (1024 dimensions)
+- Loaded once as singleton via `core/embeddings.py`
+- Supports 8192 token context
+
+**Reranker:** `BAAI/bge-reranker-large`
+- Fallback: `cross-encoder/ms-marco-MiniLM-L-6-v2`
+- Lazy initialization, loaded on first use
+
+**LLM:** `llama3.1` via Ollama (default) or `gpt-4o` via OpenAI
+
+---
+
+## Data Flow
+
+### Query Flow
+
+```
+1. User types question in ChatInterface
+2. Frontend sends POST /api/v1/query/stream
+3. SSE events flow back:
+   { type: "start",          correlation_id }
+   { type: "retrieval",      count, filter_used }
+   { type: "analysis",       regulatory_analysis (markdown) }
+   { type: "citations",      legal_citations[] }
+   { type: "risk_matrix",    risk_matrix }
+   { type: "incentives",     incentives_detected }
+   { type: "complete",       processing_time_ms }
+4. Frontend renders progressive updates in the chat bubble
+```
+
+### Ingestion Flow
+
+```
+1. POST /api/v1/ingest (or CLI: python -m ingestion.pipeline)
+2. Parse raw .txt files → LegalUnit objects
+3. Apply metadata overrides from CORPUS_DEFINITIONS
+4. Save normalized units to corpus/normalized/all_units.json
+5. Batch embed with BGE-M3 (normalize=True)
+6. Upsert to Qdrant (batch_size=32)
+7. BM25 index built from Qdrant scroll (cached to cache/bm25_index.pkl)
 ```
 
 ---
 
-## Caching
+## Configuration
 
-- **Backend**: Redis (optional, graceful degradation)
-- **Key**: SHA256 of `question + subsector` (first 16 hex chars)
-- **TTL**: 1 hour
-- **Init**: `QueryService.initialize()` with 15s timeout — cache disabled if Redis unavailable
+All configuration is loaded from `.env` via `pydantic-settings` in `app/config.py`:
 
----
-
-## Frontend
-
-- **Next.js 16** + **React 19** + **TypeScript 5**
-- **shadcn/ui** (Radix primitives) + **Tailwind CSS v4**
-- API calls via `frontend/src/lib/api.ts`
-- Next.js rewrites proxy `/api/*` to FastAPI backend
-- Components: `ChatInterface`, `MessageBubble`, `LegalCitations`, `RiskMatrix`, `IncentivesPanel`, `FilterPanel`
+| Category | Key Variables | Defaults |
+|----------|---------------|----------|
+| Qdrant | `QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_COLLECTION` | `localhost:6333`, `lexenergy_bolivia` |
+| Embeddings | `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIMENSIONS` | `BAAI/bge-m3`, `1024` |
+| Reranker | `RERANKER_MODEL`, `RERANKER_DEVICE` | `BAAI/bge-reranker-large`, `cpu` |
+| LLM | `LLM_MODEL`, `LLM_PROVIDER`, `OLLAMA_BASE_URL` | `llama3.1`, `ollama`, `localhost:11434` |
+| API | `API_HOST`, `API_PORT`, `API_WORKERS` | `0.0.0.0`, `8000`, `4` |
+| Redis | `REDIS_HOST`, `REDIS_PORT` | `localhost:6379` |
+| Retrieval | `TOP_K`, `BM25_TOP_K`, `DENSE_TOP_K`, `FINAL_TOP_K`, `HYBRID_ALPHA` | `10`, `20`, `20`, `5`, `0.5` |
 
 ---
 
-## Infrastructure
+## Docker Infrastructure
+
+`docker/docker-compose.yml` defines 4 services:
+
+| Service | Image | Ports | Purpose |
+|---------|-------|-------|---------|
+| `qdrant` | `qdrant/qdrant:v1.13.2` | 6333, 6334 | Vector database |
+| `redis` | `redis:7-alpine` | 6379 | Query cache |
+| `api` | Custom (python:3.11-slim) | 8000 | FastAPI backend |
+| `frontend` | Custom (node:22-alpine) | 3000 | Next.js frontend |
+
+---
+
+## Project Structure
 
 ```
-docker-compose.yml
-├── qdrant (v1.13.2, ports 6333/6334)
-├── redis (7-alpine, port 6379)
-├── lexenergy-api (FastAPI, port 8000)
-└── lexenergy-frontend (Next.js, port 3000)
+EnergyMind/
+├── app/                          # Backend application
+│   ├── main.py                   # FastAPI lifespan, middleware
+│   ├── config.py                 # Pydantic Settings
+│   ├── api/routes.py             # API endpoints
+│   ├── models/                   # Pydantic schemas + LegalUnit
+│   ├── prompts/                  # Spanish legal LLM prompts
+│   ├── rag/                      # RAG pipeline + LLM chain
+│   ├── retrieval/                # BM25, Dense, Hybrid, Reranker, MetadataFilter
+│   ├── services/                 # QueryService, cache, SSE, ingestion
+│   └── agents/                   # LangGraph refinement agent
+├── core/                         # Shared singletons
+│   ├── embeddings.py             # BGE-M3 singleton
+│   └── runtime/resource_manager.py  # Startup lifecycle
+├── vectorstore/                  # Qdrant client wrapper
+├── ingestion/                    # Document parsing + indexing
+│   ├── pipeline.py               # IngestionPipeline + CORPUS_DEFINITIONS
+│   ├── parsing/                  # Legal document parsers
+│   ├── normalization/            # Text normalization
+│   ├── metadata/                 # Risk flag extraction
+│   ├── lexivox/                  # LexiVox web scraper
+│   └── aetn/                     # AETN resolutions scraper
+├── corpus/                       # Legal document corpus
+│   ├── raw/                      # Source .txt files
+│   └── normalized/               # Parsed JSON output
+├── tests/                        # Test suite
+├── evaluation/                   # RAGAS evaluation
+├── docker/                       # Docker Compose + Dockerfiles
+├── frontend/                     # Next.js 16 + React 19 + shadcn/ui
+├── requirements.txt              # Python dependencies (98 packages)
+├── pyproject.toml                # Project metadata
+└── .env                          # Environment configuration
 ```
-
-Key env vars: `QDRANT_HOST`, `QDRANT_PORT`, `REDIS_HOST`, `REDIS_PORT`, `OLLAMA_BASE_URL`, `LLM_PROVIDER`, `LLM_MODEL`.
-
----
-
-## Key Design Decisions
-
-1. **Article-level chunking** — No naive text splitting. Articles are the atomic legal unit, preserving structure and enabling precise citations.
-2. **Singleton embedding model** (`core/embeddings.py`) — BGE-M3 loaded once, shared across QdrantStore and DenseRetriever.
-3. **Thread-pooled BM25** — CPU-bound scoring offloaded via `asyncio.to_thread` to avoid blocking the event loop.
-4. **Lazy reranker init** — Cross-encoder loaded on first use (not construction), with automatic fallback from FlagReranker to CrossEncoder.
-5. **Adaptive hybrid fusion** — Alpha weight between BM25 and dense dynamically adjusted per query type.
-6. **Metadata-first retrieval** — Filters inferred from query before vector search, narrowing the search space.
-7. **Optional LangGraph agent** — Refinement loop rephrases queries up to 3 iterations when results are insufficient.
-8. **Graceful degradation** — Redis cache, BM25 index, and reranker all have fallback paths if unavailable.

@@ -1,148 +1,191 @@
-import time
-from typing import Dict, Any, Optional
-
+from typing import Optional, Dict, Any, AsyncGenerator
 from loguru import logger
 
-from app.rag.chain import LegalChain
-from app.rag.context_builder import ContextBuilder
 from app.retrieval.engine import RetrievalEngine
-from app.models.schemas import (
-    QueryResponse,
-    RegulatoryAnalysis,
-    RiskMatrix,
-    IncentiveInfo,
-    LegalCitation,
-)
+from app.rag.chain import LegalChain
+from app.models.schemas import QueryResponse, QueryRequest
+from app.config import settings
 
 
 class RAGPipeline:
-    def __init__(self, qdrant=None):
+    def __init__(self, qdrant=None) -> None:
         self.retrieval = RetrievalEngine(qdrant=qdrant)
         self.chain = LegalChain()
-        self.context_builder = ContextBuilder()
+        self.initialized = False
 
-    async def initialize(self):
-        # safe if retrieval has async init, otherwise harmless
-        init_fn = getattr(self.retrieval, "initialize", None)
-        if init_fn:
-            result = init_fn()
-            if hasattr(result, "__await__"):
-                await result
-
+    async def initialize(self) -> None:
+        logger.info("Initializing RAGPipeline...")
+        await self.retrieval.initialize()
+        self.initialized = True
         logger.info("RAGPipeline initialized")
 
-    async def query(
-        self,
-        question: str,
-        subsector: Optional[str] = None,
-        tipo_norma: Optional[str] = None,
-        vigente: Optional[bool] = None,
-        top_k: int = 5,
-    ) -> QueryResponse:
-
-        start_time = time.time()
-
-        metadata_filter: Dict[str, Any] = {}
-
-        if subsector:
-            metadata_filter["subsector"] = subsector
-
-        if tipo_norma:
-            metadata_filter["tipo_norma"] = tipo_norma
-
-        if vigente is not None:
-            metadata_filter["vigente"] = vigente
-
-        logger.info(f"PIPELINE QUERY - filter: {metadata_filter}")
-
-        # -------------------------
-        # 🔥 FIX: retrieval is SYNC
-        # -------------------------
-        documents, filter_used = self.retrieval.retrieve(
-            query=question,
+    async def query(self, request: QueryRequest) -> QueryResponse:
+        if not self.initialized:
+            await self.initialize()
+        
+        metadata_filter = getattr(request, 'metadata_filter', None)
+        
+        logger.info(f"PIPELINE QUERY - question: {request.question[:50]}...")
+        
+        documents, filter_used = await self.retrieval.retrieve(
+            query=request.question,
             metadata_filter=metadata_filter,
-            top_k=top_k,
+            top_k=getattr(request, 'top_k', settings.top_k)
         )
-
+        
         logger.info(f"Retrieved {len(documents)} documents")
-
+        
         if not documents:
-            processing_time = int((time.time() - start_time) * 1000)
-
+            lang = self.chain._detect_language(request.question)
+            error_messages = {
+                "spanish": "No se encontraron documentos relevantes en el corpus.",
+                "english": "No relevant documents were found in the corpus.",
+                "portuguese": "Nenhum documento relevante foi encontrado no corpus."
+            }
+            error_analysis = {
+                "spanish": "El corpus actual no contiene información suficiente para responder esta consulta.",
+                "english": "The current corpus does not contain enough information to answer this query.",
+                "portuguese": "O corpus atual não contém informações suficientes para responder a esta consulta."
+            }
+            
             return QueryResponse(
-                question=question,
-                answer=RegulatoryAnalysis(
-                    direct_conclusion=(
-                        "Insufficient information in the specialized renewable energy legal corpus."
-                    ),
-                    regulatory_analysis=(
-                        "No relevant legal documents were found in the corpus."
-                    ),
-                    risk_matrix=RiskMatrix(),
-                    incentives_detected=IncentiveInfo(),
-                    insufficient_context=True,
-                ),
+                question=request.question,
+                answer={
+                    "direct_conclusion": error_messages.get(lang, error_messages["english"]),
+                    "regulatory_analysis": error_analysis.get(lang, error_analysis["english"]),
+                    "legal_citations": [],
+                    "risk_matrix": {"ideological_framework": "Mixed", "constitutional_conflict_risk": "Medium", "nationalization_risk": "Medium", "regulatory_instability": "Medium", "legal_ambiguity": "Medium", "arbitration_protection": "Limited"},
+                    "incentives_detected": {"detected": False, "type": None, "articles": [], "description": None},
+                    "insufficient_context": True
+                },
                 sources=[],
-                processing_time_ms=processing_time,
+                processing_time_ms=0,
+                cached=False
             )
+        
+        context = self._build_context(documents)
+        
+        instruction = """
+Eres un asistente legal experto en legislación energética de Bolivia.
+Tu tarea es responder preguntas legales basándote EXCLUSIVAMENTE en el contexto proporcionado.
+Responde en el mismo idioma de la pregunta.
+Cita las fuentes específicas (número de ley, artículo, etc.).
+Si no encuentras la información, dilo claramente.
+"""
+        
+        prompt = f"""
+{instruction}
 
-        # -------------------------
-        # Context building
-        # -------------------------
-        context = self.context_builder.build_context(documents)
-        citations = self.context_builder.extract_citations(documents)
+CONTEXTO LEGAL (documentos bolivianos):
+{context}
 
-        # -------------------------
-        # LLM call (ASYNC OK)
-        # -------------------------
-        structured = await self.chain.structured_answer(
-            question,
-            context,
-        )
+PREGUNTA: {request.question}
 
-        # -------------------------
-        # Build response
-        # -------------------------
-        analysis = RegulatoryAnalysis(
-            direct_conclusion=str(
-                structured.direct_conclusion
-                or "Insufficient information in corpus."
-            ),
-            regulatory_analysis=str(
-                structured.regulatory_analysis
-                or "The corpus does not contain sufficient legal context."
-            ),
-            legal_citations=[
-                LegalCitation(
-                    norma=c["norma"],
-                    articulo=c["articulo"],
-                    texto=c["texto"][:500],
-                    tipo_norma=c["tipo_norma"],
-                    risk_flags=c.get("risk_flags", []),
-                )
-                for c in citations
-            ],
-            risk_matrix=structured.risk_matrix or RiskMatrix(),
-            incentives_detected=structured.incentives_detected or IncentiveInfo(),
-            insufficient_context=structured.insufficient_context,
-        )
-
-        processing_time = int((time.time() - start_time) * 1000)
-
-        logger.info(f"Query complete ({processing_time}ms)")
-
+RESPUESTA:
+"""
+        
+        logger.info("📤 Generando respuesta con Groq (LLama 3.3 70B)")
+        answer_text = self.chain.generate(prompt)
+        
+        answer = {
+            "direct_conclusion": answer_text[:500] if len(answer_text) > 500 else answer_text,
+            "regulatory_analysis": answer_text,
+            "legal_citations": [],
+            "risk_matrix": {
+                "ideological_framework": "Mixed",
+                "constitutional_conflict_risk": "Medium",
+                "nationalization_risk": "Medium",
+                "regulatory_instability": "Medium",
+                "legal_ambiguity": "Medium",
+                "arbitration_protection": "Limited"
+            },
+            "incentives_detected": {
+                "detected": False,
+                "type": None,
+                "articles": [],
+                "description": None
+            },
+            "insufficient_context": False
+        }
+        
+        sources = [doc.get("id", "") for doc in documents[:5]]
+        
         return QueryResponse(
-            question=question,
-            answer=analysis,
-            sources=[d.get("id", "") for d in documents],
-            processing_time_ms=processing_time,
+            question=request.question,
+            answer=answer,
+            sources=sources,
+            processing_time_ms=0,
+            cached=False
         )
 
-    async def close(self):
-        logger.info("Closing RAGPipeline")
+    async def query_stream(self, request: QueryRequest) -> AsyncGenerator[Dict[str, Any], None]:
+        """Versión streaming del query"""
+        if not self.initialized:
+            await self.initialize()
+        
+        # Enviar evento de inicio
+        yield {"type": "start", "correlation_id": "stream"}
+        
+        metadata_filter = getattr(request, 'metadata_filter', None)
+        
+        yield {"type": "retrieval_start", "message": "Buscando documentos relevantes..."}
+        
+        documents, filter_used = await self.retrieval.retrieve(
+            query=request.question,
+            metadata_filter=metadata_filter,
+            top_k=getattr(request, 'top_k', settings.top_k)
+        )
+        
+        yield {"type": "retrieval_complete", "count": len(documents)}
+        
+        if not documents:
+            yield {"type": "error", "message": "No se encontraron documentos relevantes."}
+            return
+        
+        context = self._build_context(documents)
+        
+        instruction = """
+Eres un asistente legal experto en legislación energética de Bolivia.
+Tu tarea es responder preguntas legales basándote EXCLUSIVAMENTE en el contexto proporcionado.
+Responde en el mismo idioma de la pregunta.
+Cita las fuentes específicas (número de ley, artículo, etc.).
+Si no encuentras la información, dilo claramente.
+"""
+        
+        prompt = f"""
+{instruction}
 
-        close_fn = getattr(self.retrieval, "close", None)
-        if close_fn:
-            result = close_fn()
-            if hasattr(result, "__await__"):
-                await result
+CONTEXTO LEGAL (documentos bolivianos):
+{context}
+
+PREGUNTA: {request.question}
+
+RESPUESTA:
+"""
+        
+        yield {"type": "generation_start", "message": "Generando respuesta con Groq (LLama 3.3 70B)..."}
+        
+        # ✅ Aquí podrías implementar streaming real con Groq
+        answer_text = self.chain.generate(prompt)
+        
+        # Simular streaming enviando la respuesta en chunks
+        chunk_size = 100
+        for i in range(0, len(answer_text), chunk_size):
+            chunk = answer_text[i:i+chunk_size]
+            yield {"type": "chunk", "content": chunk}
+        
+        sources = [doc.get("id", "") for doc in documents[:5]]
+        
+        yield {"type": "sources", "sources": sources}
+        yield {"type": "complete", "processing_time_ms": 0}
+
+    def _build_context(self, documents: list) -> str:
+        context_parts = []
+        for i, doc in enumerate(documents[:5], 1):
+            texto = doc.get("texto", doc.get("payload", {}).get("texto", ""))
+            doc_id = doc.get("id", f"doc_{i}")
+            context_parts.append(f"[{i}] {doc_id}:\n{texto}")
+        return "\n\n".join(context_parts)
+
+    async def close(self) -> None:
+        pass
