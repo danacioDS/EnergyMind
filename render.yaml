@@ -1,9 +1,9 @@
 services:
   - type: web
     name: energymind-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    repo: https://github.com/danacioDS/energy_mind
+    plan: free
     envVars:
       - key: QDRANT_URL
         sync: false
