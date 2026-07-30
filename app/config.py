@@ -30,15 +30,15 @@ class Settings(BaseSettings):
     # EMBEDDINGS
     # =========================================================
 
-    embeddings_model: str = "BAAI/bge-m3"
-    embeddings_dimensions: int = 1024
+    embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embeddings_dimensions: int = 384
     embeddings_device: str = "cpu"
 
     # =========================================================
     # RERANKER
     # =========================================================
 
-    reranker_model: str = "BAAI/bge-reranker-large"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_device: str = "cpu"
     reranker_top_k: int = 5
 
