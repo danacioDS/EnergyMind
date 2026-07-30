@@ -2,7 +2,7 @@
 name = "lexenergy-bolivia"
 version = "1.0.0"
 description = "Legal RAG Platform for Renewable Energy Investments in Bolivia"
-requires-python = ">=3.11"
+requires-python = "3.11.9"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
