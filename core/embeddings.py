@@ -1,20 +1,18 @@
-import asyncio
+import gc
 from loguru import logger
-from sentence_transformers import SentenceTransformer
 from app.config import settings
 
 _embedder = None
 
-def get_embedder() -> SentenceTransformer:
+def get_embedder():
     global _embedder
     if _embedder is None:
+        logger.info("🔽 Loading embedding model on first request...")
+        from sentence_transformers import SentenceTransformer
         _embedder = SentenceTransformer(
             settings.embeddings_model,
-            device=settings.embeddings_device,
-            trust_remote_code=True,
+            device="cpu"
         )
+        gc.collect()
+        logger.info(f"✅ Embedder loaded: {settings.embeddings_model}")
     return _embedder
-
-async def warmup_embedder() -> None:
-    await asyncio.to_thread(get_embedder)
-    logger.info("Embedder warmed up")
