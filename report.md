@@ -1,229 +1,139 @@
-# EnergyMind (LexEnergy Bolivia) — Repository Analysis Report
+# LexEnergy Bolivia — Repository Analysis Report
 
-**Date**: July 2026
-**Author**: Automated analysis
-**Version**: 1.0.0
+## 1. Project Overview
 
----
+**LexEnergy Bolivia** (also branded as **EnergyMind**) is a specialized Legal RAG (Retrieval-Augmented Generation) platform for analyzing Bolivian legislation related to renewable energy investments. The system ingests legal documents (Constitution, Electricity Law, Supreme Decrees, administrative resolutions), indexes them in the Qdrant vector database, and exposes a multi-stage retrieval pipeline with LLM-powered reasoning via FastAPI and a Next.js frontend.
 
-## 1. Overview
-
-EnergyMind (LexEnergy Bolivia) is a specialized **Legal RAG (Retrieval-Augmented Generation) platform** that answers legal questions about renewable energy investments in Bolivia. It combines a FastAPI async backend, hybrid retrieval (BM25 + dense embeddings + cross-encoder reranking), LLM orchestration via LangChain/LangGraph, and a Next.js 16 chat frontend.
-
-**Target users**: Lawyers, consultants, and investors analyzing Bolivian energy regulation.
-
-**Languages supported**: Spanish (primary), English, Portuguese.
+### Core Purpose
+Reduce legal research time for Bolivian energy law from hours to seconds, providing structured answers with verified legal citations, risk analysis, and incentive detection.
 
 ---
 
-## 2. Tech Stack
+## 2. Codebase Analysis
 
-| Layer | Technology |
-|-------|-----------|
-| **API Framework** | FastAPI (Python 3.11+, async) |
-| **LLM Orchestration** | LangChain + LangGraph |
-| **Vector Database** | Qdrant (self-hosted or cloud) |
-| **Cache** | Redis (async) |
-| **Frontend** | Next.js 16 / React 19 / shadcn-ui / Tailwind CSS v4 |
-| **LLM Providers** | Groq (Llama 3.3 70B), Gemini 2.0 Flash |
-| **Embeddings** | BGE-M3 (SentenceTransformers) |
-| **Reranker** | BAAI/bge-reranker-large |
-| **Sparse Retrieval** | BM25Okapi via rank-bm25 |
-| **Containerization** | Docker + Docker Compose |
-| **Evaluation** | RAGAS |
-| **Testing** | pytest + pytest-asyncio |
-| **Linting** | ruff, mypy |
+### 2.1 Strengths
 
----
+**Architecture & Design**
+- Clean separation of concerns: API layer → Service layer → RAG/Agent layer → Retrieval pipeline → Infrastructure, with clear dependency direction
+- Well-defined retrieval pipeline with 5 distinct stages (metadata filter → BM25 + dense parallel → hybrid fusion → cross-encoder reranking → context building)
+- Singleton embedder pattern (`core/embeddings.py`) avoids redundant model loading
+- Multi-provider LLM router with automatic fallback (Groq → Gemini) prevents single-provider failures
 
-## 3. Repository Structure
+**Performance & Asyncio**
+- CPU-bound BM25 search offloaded to thread pool via `asyncio.to_thread()`
+- Parallel warmup of embedder and Qdrant during startup
+- Background initialization with readiness gating (503 until warmup completes)
+- Redis caching of query results reduces latency for repeated queries
 
-```
-EnergyMind/
-├── app/                    # FastAPI backend
-│   ├── api/                # REST routes (blocking + SSE)
-│   ├── rag/                # RAG pipeline, context builder, LLM chain
-│   ├── retrieval/          # BM25, dense, hybrid fusion, reranker
-│   ├── agents/             # LangGraph refinement loop
-│   ├── prompts/            # Legal system prompts (Spanish)
-│   ├── models/             # Pydantic schemas
-│   ├── services/           # QueryService, SSE, cache, embeddings
-│   ├── llm/                # LLM provider router + implementations
-│   ├── config.py           # Pydantic Settings
-│   └── main.py             # App entry point
-├── core/                   # Singleton embeddings + resource manager
-├── ingestion/              # Scrapers + parsing + normalization
-│   ├── parsing/            # Legal & regex parsers
-│   ├── normalization/      # Text normalizer
-│   ├── metadata/           # Metadata extraction
-│   ├── aetn/               # AETN regulator scraper
-│   └── lexivox/            # LexiVox legal database scraper
-├── vectorstore/            # Qdrant client wrapper
-├── corpus/                 # Raw + normalized legal texts
-├── cache/                  # BM25 index persistence
-├── tests/                  # Unit + integration + golden tests
-├── evaluation/             # RAGAS evaluation scripts
-├── frontend/               # Next.js 16 chat UI
-│   └── src/
-│       ├── app/            # Next.js pages
-│       ├── lib/            # API client, types, utils
-│       └── components/     # Chat, analysis, layout, UI primitives
-└── docker/                 # Dockerfile + docker-compose
-```
+**Retrieval Quality**
+- Hybrid retrieval combining sparse (BM25 with jieba tokenization) and dense (BGE-M3 embeddings) approaches
+- Adaptive alpha weighting: 0.7 for code-specific queries (legal articles, decrees), 0.3 for conceptual questions
+- Cross-encoder reranking as final refinement stage before LLM generation
+- Metadata filtering inferred from query text (e.g., "solar" → subsector filter)
 
----
+**Testing & Evaluation**
+- Golden test set of 10 representative legal queries with expected document IDs and keyword assertions
+- RAGAS evaluation script for measuring faithfulness, answer relevancy, context precision, and context recall
+- Separate test files for API, ingestion, retrieval, search, and startup
 
-## 4. Key Components
+**Developer Experience**
+- Comprehensive docker-compose with all dependencies (Qdrant, Redis, API, Frontend)
+- Multi-stage Dockerfile separates build and runtime for smaller images
+- Loguru-based structured logging with correlation IDs for request tracing
+- Pydantic Settings for all configuration with `.env` file support
 
-### 4.1 Retrieval System (`app/retrieval/`)
+### 2.2 Areas for Improvement
 
-Multi-stage hybrid retrieval pipeline:
+**Code Maturity**
+- Some mix of Spanish and English identifiers in the codebase; comments are bilingual but function names and classes are primarily English
+- Hardcoded timeout values and error messages (e.g., 120s/180s timeouts in `query_service.py`)
+- The `LegalAgentGraph` references `StructuredLegalResponse` and `chain.structured_answer()` and `chain.analyze_risk()` methods that are not implemented in `LegalChain` — these would fail at runtime (incomplete LangGraph integration)
+- Risk matrix values are hardcoded defaults rather than derived from actual retrieved content
+- `pipeline.py` generates its own inline prompt instead of using the `ContextBuilder` and prompt templates from `app/prompts/`
 
-1. **MetadataFilter** — infers Qdrant `must` filters from query keywords (subsector, enfoque, tipo_norma, renewable_incentive, vigente)
-2. **BM25Retriever** — sparse keyword search over full corpus via `BM25Okapi`, persisted to disk via pickle, CPU-bound work offloaded to thread pool
-3. **DenseRetriever** — semantic search via Qdrant using BGE-M3 embeddings (1024-dim vectors)
-4. **HybridRetriever** — score normalization + weighted fusion with adaptive alpha (0.7 for code queries, 0.3 for conceptual, 0.5 default)
-5. **Reranker** — lazy-loaded cross-encoder (FlagReranker → CrossEncoder fallback)
+**Retrieval**
+- BM25 uses jieba (a Chinese text segmenter) for Spanish legal text tokenization — this may produce suboptimal tokenization for Spanish legal vocabulary
+- Dense retriever (`dense.py`) performs vector search **locally** on BM25 results using numpy dot products rather than leveraging Qdrant's vector search for the dense phase — this means the dense retriever only re-ranks BM25 results instead of providing a truly independent search path
+- The `MetadataFilter` is a simple keyword map; it does not handle complex boolean logic or ranges (e.g., date filtering)
 
-### 4.2 RAG Pipeline (`app/rag/`)
+**LLM Integration**
+- `LegalChain.generate()` is synchronous, blocking the event loop during LLM calls
+- Streaming support in `RAGPipeline.query_stream()` chunks a pre-generated response rather than streaming tokens from the LLM
+- Provider initialization happens on every `generate()` call (inside `LLMRouter`) instead of reusing clients
+- No support for OpenAI or Anthropic providers despite being mentioned in documentation
 
-- **RAGPipeline** — orchestrates retrieval → context building → LLM generation
-- **LegalChain** — wraps LLMRouter, includes language detection heuristic
-- **ContextBuilder** — formats retrieved docs with metadata headers, extracts citations
+**Testing**
+- Dense retrieval golden tests are skipped due to PyTorch CVE issues in the environment
+- No integration tests that exercise the full pipeline end-to-end against a real Qdrant instance
+- No performance benchmarks or load tests
 
-### 4.3 Agent System (`app/agents/`)
+**Monitoring & Observability**
+- `prometheus-client` is listed as a dependency but not integrated into the application
+- No health check on downstream dependencies (Qdrant, Redis) beyond initial connection
+- No distributed tracing beyond correlation IDs
 
-- **LegalAgentGraph** — LangGraph `StateGraph` with 5 nodes: retrieve → analyze → risk_assess → finalize, with conditional refinement loop (up to 3 iterations)
+### 2.3 Technology Overview
 
-### 4.4 LLM Router (`app/llm/`)
-
-- **LLMRouter** — multi-provider fallback: Groq → Gemini, tracks failures, auto-retry
-- **GroqLLM** — Llama 3.3 70B via Groq API
-- **GeminiLLM** — Gemini 2.0 Flash via Google AI API
-
-### 4.5 Ingestion (`ingestion/`)
-
-- **IngestionPipeline** — processes 5 source documents into LegalUnits, indexes to Qdrant
-- **LegalDocumentParser** — splits by article boundaries per norm type
-- **RegexLegalParser** — regex patterns for Bolivian law references
-- **LegalTextNormalizer** — text cleaning, whitespace/header/footer removal
-- **Metadata Extractor** — risk flags (7 categories), subsector, enfoque, etc.
-- **AETNScraper / LexivoxScraper** — async web scrapers
-
-### 4.6 Frontend (`frontend/`)
-
-- **ChatInterface** — main chat UI with streaming updates and filter sidebar
-- **MessageBubble** — user/assistant message display with loading skeleton
-- **FilterPanel** — subsector, norm type, agent mode toggles
-- **RiskMatrix** — visual risk matrix (6 categories with color coding)
-- **LegalCitations** — citations display panel
-- **IncentivesPanel** — renewable incentive detection display
-- **Corpus Stats Dashboard** — recharts bar charts (`/stats`)
+| Aspect | Current Choice | Notes |
+|--------|---------------|-------|
+| **Vector DB** | Qdrant 1.13 | Proper self-hosted vector DB with payload indexing |
+| **Embeddings** | BGE-M3 (1024d) | Strong multilingual model suitable for Spanish |
+| **Reranker** | BGE-reranker-large | High-quality cross-encoder |
+| **Sparse Retrieval** | BM25Okapi + jieba | Simple but jieba is designed for Chinese |
+| **LLM Router** | Custom (Groq → Gemini) | No OpenAI/Claude support yet |
+| **Agent Framework** | LangGraph | Partial implementation |
+| **Frontend** | Next.js 16 + shadcn/ui | Modern stack |
+| **API** | FastAPI | Standard choice |
 
 ---
 
-## 5. API Endpoints
+## 3. Business Context
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/query` | Blocking RAG query |
-| POST | `/api/v1/query/stream` | Streaming SSE query |
-| GET | `/api/v1/health` | Liveness check |
-| GET | `/api/v1/health/ready` | Readiness check |
-| POST | `/api/v1/ingest` | Trigger ingestion |
-| GET | `/api/v1/corpus/stats` | Corpus statistics |
+The repository includes a `business_pitch.md` that positions the product as a premium legal assistant with:
+- **Target users**: Legal professionals, energy consultants, investors
+- **Monetization**: Freemium model ($0 Free / $29 Pro / $99 Enterprise per month)
+- **Value proposition**: 90% reduction in legal research time
+- **Metrics**: >95% source accuracy, <2% hallucination rate, <3s response time
 
----
-
-## 6. Data Flow
-
-```
-User Query → FastAPI → QueryService → [Cache hit? Return cached]
-                                     → [Cache miss]
-                                       → RAGPipeline or LegalAgentGraph
-                                         → RetrievalEngine
-                                           → MetadataFilter
-                                           → BM25 (parallel) + Qdrant Dense (parallel)
-                                           → Hybrid Fusion
-                                           → Cross-Encoder Reranker
-                                         → ContextBuilder
-                                         → LLM (Groq → Gemini fallback)
-                                       → StructuredLegalResponse
-```
+The engineering implementation aligns with the business pitch in architecture (multi-provider, structured responses, streaming) but lacks some of the promised premium features (export to PDF, interactive citations panel, confidence scores, multi-tenant support).
 
 ---
 
-## 7. Legal Corpus
+## 4. Recommendations
 
-| Document | Type | Coverage |
-|----------|------|----------|
-| Constitution of Bolivia (2009) | CPE | Selected articles |
-| Ley de Electricidad N° 1604 (1994) | Law | Full |
-| Ley N° 943 (amendments) | Law | Full |
-| DS N° 5503 (2025) — Investment Regime | Decree | Full |
-| AETN administrative resolutions | Resolutions | Scraped samples |
+**Critical (for production readiness)**
+1. Complete the LangGraph agent implementation — `structured_answer()` and `analyze_risk()` methods are missing from `LegalChain`
+2. Make LLM generation async to avoid blocking the event loop
+3. Implement proper streaming from the LLM provider rather than chunking pre-generated text
+4. Remove hardcoded risk matrix defaults and derive from retrieved content
 
----
+**High Priority**
+1. Replace jieba with a Spanish-aware tokenizer (e.g., spaCy) for BM25
+2. Fix the dense retriever to use Qdrant's vector search directly rather than re-ranking BM25 results locally
+3. Cache LLM provider clients instead of re-instantiating on every request
+4. Add OpenAI and Anthropic provider support as documented
+5. Wire Prometheus metrics into the application
 
-## 8. Testing
+**Medium Priority**
+1. Unify the prompt strategy — use `app/prompts/` templates and `ContextBuilder` consistently
+2. Add end-to-end integration tests with a test Qdrant instance
+3. Implement proper dependency health checks
+4. Standardize language (Spanish vs English) across the codebase
+5. Add multi-tenant support infrastructure
 
-- **Unit tests**: `tests/test_ingestion.py`, `tests/test_retrieval.py`
-- **API tests**: `tests/test_api.py`
-- **Startup tests**: `tests/test_startup.py` (warmup + 503 smoke)
-- **Golden regression**: `tests/test_retrieval_golden.py` (10 Spanish queries)
-- **Evaluation**: `evaluation/run_ragas_eval.py` (RAGAS metrics)
-- **Manual scripts**: `test_qdrant.py`, `test_pipeline.py`, `test_search.py`
-- **Config**: pytest with `asyncio_mode=auto`, testpaths=`tests/`
-
----
-
-## 9. Key Architectural Decisions
-
-1. **Legal-first chunking** — articles as atomic units, not naive text splitting
-2. **Metadata-first retrieval** — filter before vector search reduces noise
-3. **Hybrid retrieval** — BM25 (sparse) + dense embeddings in parallel, fused with adaptive alpha
-4. **Thread-pooled BM25** — CPU-bound scoring offloaded via `asyncio.to_thread`
-5. **Lazy reranker** — cross-encoder loaded on first use with automatic fallback
-6. **Singleton embeddings** — BGE-M3 loaded once, shared across components
-7. **SSE streaming** — progressive event emission (retrieval → analysis → risk → incentives → complete)
-8. **Provider fallback** — LLMRouter tries Groq → Gemini on failure
-9. **Graceful degradation** — Redis, BM25, reranker all have fallback paths
-10. **Constitutional hierarchy** — CPE Art. 410 priority enforced in prompts
+**Low Priority**
+1. Implement PDF/Word export functionality
+2. Add confidence scoring for answers
+3. Build the interactive citations panel in the frontend
+4. Implement rate limiting for API key tiers
+5. Add admin dashboard and audit trails
 
 ---
 
-## 10. Dependencies
+## 5. Conclusion
 
-**Backend**: ~49 Python packages including fastapi, langchain, langgraph, qdrant-client, sentence-transformers, rank-bm25, unstructured, httpx, loguru, redis, celery, prometheus-client.
+LexEnergy Bolivia is a well-architected legal RAG platform with a sophisticated multi-stage retrieval pipeline, clean API design, and modern frontend. The codebase demonstrates strong understanding of production RAG patterns: hybrid retrieval, cross-encoder reranking, multi-provider fallback, async warmup, and Redis caching.
 
-**Frontend**: 17 npm packages including next 16, react 19, @radix-ui primitives, recharts, tailwindcss v4, lucide-react.
+The main risks are in the **integration layer** (incomplete LangGraph agent, synchronous LLM calls, missing provider methods) and the **retrieval accuracy** (Chinese tokenizer for Spanish text, dense retriever operating on BM25 subset rather than full corpus). These are addressable gaps rather than fundamental design flaws.
 
----
-
-## 11. Strengths
-
-- Well-structured, modular async codebase with clear separation of concerns
-- Comprehensive multi-stage retrieval with fallbacks at every level
-- Legal-domain-aware chunking and metadata extraction
-- SSO streaming with progressive disclosure of results
-- Dual LLM provider support with automatic failover
-- Optional LangGraph agent for iterative query refinement
-- Full Docker Compose setup for one-command deployment
-- Includes golden test suite and RAGAS evaluation
-
-## 12. Areas for Improvement
-
-- No CI/CD pipeline configured
-- No Terraform or cloud deployment scripts
-- Limited test coverage for the frontend
-- No load testing or performance benchmarking
-- Reranker may be slow on CPU; could benefit from ONNX quantization
-- No authentication/authorization layer
-- Monitoring via Prometheus metrics but no dashboards
-- No migration system for Qdrant collection schema changes
-
----
-
-## 13. Conclusion
-
-EnergyMind is a production-ready Legal RAG platform with a sophisticated hybrid retrieval system, multi-LLM provider support, and a polished chat UI. The architecture is async-first, modular, and designed for graceful degradation. It is well-suited for deployment in legal-tech environments where structured analysis of regulatory frameworks is required.
+The business positioning is clear and the technical foundation supports the claimed value proposition, with most gaps being in premium features rather than core functionality.
