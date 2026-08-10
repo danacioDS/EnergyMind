@@ -1,4 +1,4 @@
-# LexEnergy Bolivia
+# EnergyMind Bolivia
 
 A specialized **Legal RAG (Retrieval-Augmented Generation) platform** for analyzing Bolivian legislation related to renewable energy investment. Combines **FastAPI**, **LangChain/LangGraph**, **Qdrant**, and **hybrid retrieval (BM25 + dense embeddings + cross-encoder reranking)** to deliver structured legal reasoning over national regulatory frameworks.
 
