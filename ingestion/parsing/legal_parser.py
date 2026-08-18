@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from app.models.legal_unit import LegalUnit
+from app.ingestion.models import LegalUnit
 from ingestion.metadata.extractor import extract_all_metadata
 from ingestion.normalization.normalizer import LegalTextNormalizer
 

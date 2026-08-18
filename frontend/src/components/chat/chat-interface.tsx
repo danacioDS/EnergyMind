@@ -4,10 +4,6 @@ import { useState, useRef, useEffect } from "react"
 import { Send, Loader2 } from "lucide-react"
 import { queryLegal } from "@/lib/api"
 import type { QueryRequest } from "@/lib/types"
-import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 
 interface Message {
   id: string
@@ -102,75 +98,72 @@ export default function ChatInterface() {
   }
 
   return (
-    <Card className="h-[80vh] flex flex-col border border-[#2A3340] bg-[#111118]">
-      <CardContent className="flex-1 p-4 overflow-hidden">
-        <ScrollArea className="h-full pr-4">
-          <div className="space-y-4">
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center text-[#94A3B8]">
-                <p className="text-lg font-medium text-white">EnergyMind</p>
-                <p className="text-sm max-w-md mt-2">
-                  Pregunta sobre legislación de energías renovables en Bolivia.
-                  <br />
-                  Ejemplo: "¿Qué dice la Ley 1604 sobre energías renovables?"
-                </p>
-              </div>
-            ) : (
-              messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                      msg.role === "user"
-                        ? "bg-[#00D4AA] text-[#0B0F14]"
-                        : "bg-[#1A222A] text-white"
-                    }`}
-                  >
-                    {msg.loading ? (
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Pensando...</span>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
-                        {msg.sources && msg.sources.length > 0 && (
-                          <div className="mt-2 text-xs text-[#94A3B8]">
-                            Fuentes: {msg.sources.join(", ")}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-            <div ref={scrollRef} />
+    <div className="flex flex-col h-[80vh] max-w-3xl mx-auto">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center text-[#94A3B8]">
+            <p className="text-lg font-medium text-white">EnergyMind</p>
+            <p className="text-sm max-w-md mt-2">
+              Pregunta sobre legislación de energías renovables en Bolivia.
+              <br />
+              Ejemplo: "¿Qué dice la Ley 1604 sobre energías renovables?"
+            </p>
           </div>
-        </ScrollArea>
-      </CardContent>
+        ) : (
+          messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                  msg.role === "user"
+                    ? "bg-[#00D4AA] text-[#0B0F14]"
+                    : "bg-[#1A222A] text-white"
+                }`}
+              >
+                {msg.loading ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Pensando...</span>
+                  </div>
+                ) : (
+                  <>
+                    <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div className="mt-2 text-xs text-[#94A3B8]">
+                        Fuentes: {msg.sources.join(", ")}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+        <div ref={scrollRef} />
+      </div>
 
       <div className="border-t border-[#2A3340] p-4">
         <div className="flex gap-2">
-          <Input
+          <input
+            type="text"
             placeholder="Pregunta sobre energías renovables en Bolivia..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isLoading}
-            className="flex-1 bg-[#1A222A] text-white border-[#2A3340] focus:border-[#00D4AA]"
+            className="flex-1 bg-[#1A222A] text-white rounded-lg px-4 py-2 border border-[#2A3340] focus:outline-none focus:border-[#00D4AA]"
           />
-          <Button
+          <button
             onClick={handleSubmit}
             disabled={!input.trim() || isLoading}
-            className="bg-[#00D4AA] text-[#0B0F14] hover:bg-[#00E6B8]"
+            className="bg-[#00D4AA] text-[#0B0F14] rounded-lg px-4 py-2 disabled:opacity-50 hover:bg-[#00E6B8] transition-colors"
           >
             {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
-          </Button>
+          </button>
         </div>
       </div>
-    </Card>
+    </div>
   )
 }

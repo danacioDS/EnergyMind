@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import List
 from loguru import logger
 
-from app.models.legal_unit import LegalUnit
+from app.ingestion.models import LegalUnit
 from app.config import settings
 from ingestion.parsing.legal_parser import LegalDocumentParser
 from ingestion.normalization.normalizer import LegalTextNormalizer

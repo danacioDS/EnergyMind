@@ -1,12 +1,6 @@
 "use client"
 
-import dynamic from "next/dynamic"
-
-// Cargar ChatInterface dinámicamente para evitar errores de SSR
-const ChatInterface = dynamic(
-  () => import("@/components/chat/chat-interface").then((mod) => mod.default || mod.ChatInterface),
-  { ssr: false }
-)
+import ChatInterface from "@/components/chat/chat-interface"
 
 export default function Home() {
   return (

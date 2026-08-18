@@ -56,4 +56,3 @@ class IngestResult(BaseModel):
     duplicates_skipped: int = 0
     errors: List[str] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
-
