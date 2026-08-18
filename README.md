@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # EnergyMind Bolivia
+=======
+# EnergyMind
+>>>>>>> 5a946e2 (feat: EnergyMind v1.0 demo-ready)
 
 A specialized **Legal RAG (Retrieval-Augmented Generation) platform** for analyzing Bolivian legislation related to renewable energy investment. Combines **FastAPI**, **LangChain/LangGraph**, **Qdrant**, and **hybrid retrieval (BM25 + dense embeddings + cross-encoder reranking)** to deliver structured legal reasoning over national regulatory frameworks.
 
@@ -192,7 +196,7 @@ curl -X POST http://localhost:8000/api/v1/query \
 ## Project Structure
 
 ```
-lexenergy/
+energymind/
 ├── app/                    # FastAPI backend
 │   ├── api/                # REST routes (blocking + SSE)
 │   ├── rag/                # RAG pipeline, context builder, LLM chain

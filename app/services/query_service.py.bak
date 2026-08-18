@@ -34,58 +34,26 @@ class QueryService:
 
     async def initialize(self) -> None:
         t = time.perf_counter()
-        
-        logger.info("🔄 Inicializando QueryService...")
-        
-        try:
-            await self._init_pipeline()
-        except Exception as e:
-            logger.error(f"❌ Pipeline initialization failed: {e}")
-            raise
-        
-        try:
-            await self._init_agent()
-        except Exception as e:
-            logger.warning(f"⚠️ Agent initialization failed (non-critical): {e}")
-            # No raise - el agente es opcional
-        
-        try:
-            await self._init_redis()
-        except Exception as e:
-            logger.warning(f"⚠️ Redis initialization failed (non-critical): {e}")
-            # No raise - redis es opcional
 
-        logger.info(f"✅ QueryService initialized in {time.perf_counter() - t:.2f}s")
+        await asyncio.gather(
+            self._init_pipeline(),
+            self._init_agent(),
+            self._init_redis(),
+        )
+
+        logger.info(f"QueryService initialized in {time.perf_counter() - t:.2f}s")
 
     async def _init_pipeline(self) -> None:
         t = time.perf_counter()
-        logger.info("🔧 Initializing RAGPipeline...")
-        
-        try:
-            self.pipeline = RAGPipeline(qdrant=self.rm.qdrant())
-            logger.info("✅ RAGPipeline created")
-            
-            await asyncio.wait_for(self.pipeline.initialize(), timeout=180)
-            logger.info(f"✅ RAGPipeline initialized in {time.perf_counter() - t:.2f}s")
-            
-        except asyncio.TimeoutError:
-            logger.error("❌ RAGPipeline initialization timeout (180s)")
-            raise
-        except Exception as e:
-            logger.error(f"❌ RAGPipeline initialization failed: {e}")
-            raise
+        self.pipeline = RAGPipeline(qdrant=self.rm.qdrant())
+        await asyncio.wait_for(self.pipeline.initialize(), timeout=180)
+        logger.info(f"RAGPipeline initialized in {time.perf_counter() - t:.2f}s")
 
     async def _init_agent(self) -> None:
         t = time.perf_counter()
-        logger.info("🔧 Initializing LegalAgentGraph...")
-        
-        try:
-            self.agent = LegalAgentGraph()
-            await asyncio.wait_for(self.agent.initialize(), timeout=120)
-            logger.info(f"✅ LegalAgentGraph initialized in {time.perf_counter() - t:.2f}s")
-        except Exception as e:
-            logger.warning(f"⚠️ Agent initialization failed: {e}")
-            self.agent = None
+        self.agent = LegalAgentGraph()
+        await asyncio.wait_for(self.agent.initialize(), timeout=120)
+        logger.info(f"LegalAgentGraph initialized in {time.perf_counter() - t:.2f}s")
 
     async def _init_redis(self) -> None:
         try:
@@ -94,10 +62,9 @@ class QueryService:
                 timeout=15,
             )
             self.redis_enabled = True
-            logger.info("✅ Redis connected")
-        except Exception as e:
-            logger.warning(f"⚠️ Redis unavailable — cache disabled: {e}")
-            self.redis_enabled = False
+            logger.info("Redis connected")
+        except Exception:
+            logger.warning("Redis unavailable — cache disabled")
 
     async def close(self) -> None:
         if self.pipeline:
@@ -115,11 +82,6 @@ class QueryService:
     async def process_query(self, request: QueryRequest) -> QueryResponse:
         import time
         start_time = time.perf_counter()
-        
-        # ✅ Verificar que pipeline está inicializado
-        if self.pipeline is None:
-            logger.error("❌ Pipeline not initialized")
-            raise RuntimeError("Pipeline not initialized. Please try again later.")
         
         cache_key = self._get_cache_key(request)
         
@@ -142,7 +104,11 @@ class QueryService:
             
             if self.redis_enabled:
                 try:
-                    await set_cached(request.question, request.subsector, response.dict() if hasattr(response, 'dict') else response, ttl=3600)
+                    await set_cached(
+                        cache_key,
+                        response.dict() if hasattr(response, 'dict') else response,
+                        ttl=3600
+                    )
                 except Exception as e:
                     logger.warning(f"Error al guardar en caché: {e}")
             
@@ -161,11 +127,7 @@ class QueryService:
         """Procesa una consulta legal con streaming"""
         logger.info(f"📝 Streaming query: {request.question[:50]}...")
         
-        if self.pipeline is None:
-            logger.error("❌ Pipeline not initialized")
-            yield {"type": "error", "message": "Pipeline not initialized"}
-            return
-        
+        # Usar el pipeline directamente
         async for event in self.pipeline.query_stream(request):
             yield event
 
@@ -176,3 +138,9 @@ class QueryService:
         content = request.question + json.dumps(getattr(request, 'metadata_filter', {}))
         return f"query:{hashlib.sha256(content.encode()).hexdigest()}"
 
+    async def initialize(self):
+        """Inicializa las dependencias del servicio."""
+        logger.info("Initializing QueryService...")
+        # Por ahora, solo log
+        # El agente se inicializa después (Sprint 6)
+        return self

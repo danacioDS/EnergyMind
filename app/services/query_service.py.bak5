@@ -176,3 +176,7 @@ class QueryService:
         content = request.question + json.dumps(getattr(request, 'metadata_filter', {}))
         return f"query:{hashlib.sha256(content.encode()).hexdigest()}"
 
+    async def initialize(self):
+        """Inicializa las dependencias del servicio."""
+        logger.info("Initializing QueryService...")
+        return self

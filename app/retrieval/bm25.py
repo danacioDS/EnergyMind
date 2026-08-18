@@ -16,60 +16,56 @@ class BM25Retriever:
     def _tokenize_spanish(self, text: str) -> List[str]:
         """
         Tokenización específica para español legal.
-        Incluye stopwords legales y términos jurídicos.
+        Conserva números y términos jurídicos clave.
         """
         if not text:
             return []
         
         # 1. Limpiar y normalizar
         text = text.lower()
-        # Eliminar caracteres especiales pero mantener letras, números y guiones
         text = re.sub(r'[^\w\sáéíóúñü.-]', ' ', text)
-        # Normalizar espacios
         text = re.sub(r'\s+', ' ', text).strip()
         
         # 2. Tokenizar por espacios
         tokens = text.split()
         
-        # 3. Eliminar stopwords (incluyendo términos legales comunes)
+        # 3. Stopwords (NO eliminar términos legales clave)
         stopwords = {
-            # Artículos
             'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
-            # Preposiciones
-            'de', 'del', 'en', 'por', 'para', 'con', 'sin', 'sobre', 'entre', 
-            'hasta', 'desde', 'durante', 'según', 'mediante', 'contra',
-            # Conjunciones
+            'de', 'del', 'en', 'por', 'para', 'con', 'sin', 'sobre', 'entre',
+            'hasta', 'desde', 'durante', 'segun', 'mediante', 'contra',
             'y', 'o', 'u', 'ni', 'que', 'quien', 'cual', 'cuyo', 'donde',
             'cuando', 'como', 'porque', 'pues', 'aunque', 'si', 'sino',
-            # Adverbios
-            'más', 'menos', 'muy', 'tan', 'tanto', 'bien', 'mal', 'así',
-            'también', 'tampoco', 'sí', 'no', 'ya', 'aún', 'todavía',
-            # Verbos comunes
+            'mas', 'menos', 'muy', 'tan', 'tanto', 'bien', 'mal', 'asi',
+            'tambien', 'tampoco', 'si', 'no', 'ya', 'aun', 'todavia',
             'ser', 'estar', 'haber', 'tener', 'hacer', 'decir', 'ver', 'dar',
             'saber', 'poder', 'querer', 'deber', 'ir', 'venir', 'llevar',
             'dejar', 'seguir', 'encontrar', 'llamar', 'pasar', 'quedar',
-            # Términos legales comunes (stopwords)
-            'artículo', 'art', 'num', 'número', 'inciso', 'párrafo', 'literal',
-            'título', 'capítulo', 'sección', 'norma', 'reglamento', 'decreto',
-            'ley', 'código', 'constitución', 'sentencia', 'resolución',
-            'reglamentación', 'disposición', 'establece', 'determina',
-            'considerando', 'visto', 'teniendo', 'presente', 'acuerdo',
-            'declara', 'modifica', 'deroga', 'abroga', 'sustituye',
-            'adicional', 'transitorio', 'final', 'vigencia', 'publicación',
-            'consecuencia', 'efecto', 'regula', 'aplica', 'deberá', 'será',
-            'podrá', 'tendrá', 'facultad', 'competencia', 'atribución',
+            'num', 'numero', 'inciso', 'parrafo', 'literal',
+            'titulo', 'capitulo', 'seccion', 'reglamento',
+            'sentencia', 'resolucion', 'reglamentacion', 'disposicion',
+            'establece', 'determina', 'considerando', 'visto',
+            'teniendo', 'presente', 'acuerdo', 'declara', 'modifica',
+            'deroga', 'abroga', 'sustituye', 'adicional', 'transitorio',
+            'final', 'vigencia', 'publicacion', 'consecuencia', 'efecto',
+            'regula', 'aplica', 'debera', 'sera', 'podra', 'tendra',
+            'facultad', 'competencia', 'atribucion',
         }
         
-        tokens = [t for t in tokens if t not in stopwords and len(t) > 2]
+        # 🔥 Conservar: números, términos legales clave, palabras > 1 carácter
+        # NO eliminar "ley", "articulo", "decreto", "constitucion", ni números
+        tokens = [
+            t for t in tokens 
+            if t not in stopwords 
+            and len(t) > 1
+        ]
         
-        # 4. Opcional: stemmming básico para términos legales
-        # Conservamos términos con números (artículos, leyes)
-        tokens = [t for t in tokens if not re.match(r'^\d+$', t)]
+        # ❌ ELIMINADO: tokens = [t for t in tokens if not re.match(r'^\d+$', t)]
+        # Los números son CRÍTICOS para IDs de leyes, artículos, decretos
         
         return tokens
 
     def build_index(self, documents: List[Dict[str, Any]]) -> None:
-        """Construye el índice BM25 a partir de documentos"""
         self.documents = documents
         self.tokenized_corpus = []
         
@@ -85,7 +81,6 @@ class BM25Retriever:
             logger.warning("No documents to build BM25 index")
 
     def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        """Busca documentos relevantes usando BM25"""
         if not self.index or not self.documents:
             logger.warning("BM25 index not built or empty")
             return []
@@ -95,10 +90,8 @@ class BM25Retriever:
             logger.warning("Query tokenized to empty")
             return []
         
-        # Obtener scores
         scores = self.index.get_scores(tokenized_query)
         
-        # Obtener índices de los mejores resultados
         top_indices = sorted(
             range(len(scores)),
             key=lambda i: scores[i],
@@ -116,7 +109,6 @@ class BM25Retriever:
         return results
 
     def save(self, path: Path) -> None:
-        """Guarda el índice BM25 en disco"""
         if self.index is None:
             logger.warning("Cannot save: index not built")
             return
@@ -133,7 +125,6 @@ class BM25Retriever:
         logger.info(f"BM25 index saved to {path}")
 
     def load(self, path: Path) -> bool:
-        """Carga el índice BM25 desde disco"""
         if not path.exists():
             logger.info(f"No persisted BM25 index at {path}")
             return False

@@ -1,110 +1,87 @@
-import sys
-import time
-import uuid
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from loguru import logger
-
-from app.config import settings
 from app.api.routes import router
-from core.runtime.resource_manager import ResourceManager
+from app.config import settings
+from app.middleware.correlation import CorrelationIDMiddleware
+from app.utils.logging import setup_logging
 
+_warmup_complete = False
 
-class CorrelationIDMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())[:8]
-        with logger.contextualize(correlation_id=cid):
-            request.state.correlation_id = cid
-            response = await call_next(request)
-            response.headers["X-Correlation-ID"] = cid
-            return response
-
-
-def setup_logging() -> None:
-    logger.remove()
-    logger.add(
-        sys.stdout,
-        format=(
-            "<green>{time:HH:mm:ss}</green> | "
-            "<level>{level:8}</level> | "
-            "<cyan>{extra[correlation_id]: >8}</cyan> | "
-            "{message}"
-        ),
-        level=settings.log_level,
-        colorize=True,
+def create_app() -> FastAPI:
+    """Crea la aplicación FastAPI."""
+    app = FastAPI(
+        title="EnergyMind API",
+        description="Legal RAG para legislación boliviana de energías renovables",
+        version="0.1.0",
+        lifespan=lifespan
     )
+    
+    # CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.FRONTEND_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # Correlation ID
+    app.add_middleware(CorrelationIDMiddleware)
+    
+    # Router
+    app.include_router(router)
+    
+    return app
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Gestiona el ciclo de vida de la aplicación."""
     setup_logging()
-    logger.info("EnergyMind starting...")
-
+    logger.info("🚀 Starting EnergyMind...")
+    
+    from core.runtime.resource_manager import ResourceManager
     rm = ResourceManager()
     app.state.resource_manager = rm
-    app.state.ready = False
-    app.state.query_service = None
-
-    warmup_task = asyncio.create_task(_background_init(app, rm))
-
+    
+    asyncio.create_task(_background_init(app, rm))
+    
     yield
+    
+    logger.info("🛑 Shutting down...")
+    await rm.cleanup()
 
-    warmup_task.cancel()
+
+async def _background_init(app: FastAPI, rm):
+    global _warmup_complete
+    
     try:
-        await warmup_task
-    except (asyncio.CancelledError, Exception):
-        pass
-
-    if app.state.query_service:
-        await app.state.query_service.close()
-    await rm.close()
-    logger.info("Shutdown complete")
-
-
-async def _background_init(app: FastAPI, rm: ResourceManager) -> None:
-    try:
-        await rm.warmup()
+        logger.info("⏳ Warming up resources...")
+        await asyncio.wait_for(rm.warmup(), timeout=60)
+        
+        _warmup_complete = True
+        logger.info("✅ ResourceManager warmup complete")
+        
         from app.services.query_service import QueryService
-        svc = QueryService(rm)
-        await svc.initialize()
-        app.state.query_service = svc
+        
+        # 🔥 CRÍTICO: Pasar rm a QueryService
+        app.state.query_service = QueryService(rm)
+        await app.state.query_service.initialize()
+        logger.info("✅ QueryService initialized")
+        
         app.state.ready = True
-        logger.info("EnergyMind fully ready")
-    except Exception:
-        logger.exception("Background init failed")
+        logger.info("✅ App state set to ready")
+        logger.info("🎉 EnergyMind is ready!")
+        
+    except asyncio.TimeoutError:
+        logger.error("❌ Warmup timeout (60s)")
+        app.state.ready = False
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {e}")
         app.state.ready = False
 
 
-app = FastAPI(
-    title="EnergyMind",
-    description="Legal RAG Platform for Renewable Energy Investments in Bolivia",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.frontend_origins.split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.add_middleware(CorrelationIDMiddleware)
-app.include_router(router)
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host=settings.api_host,
-        port=settings.api_port,
-        workers=settings.api_workers,
-        reload=settings.api_debug,
-    )
+app = create_app()

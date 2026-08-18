@@ -29,10 +29,9 @@ openpyxl==3.1.5
 
 # ✅ LangGraph y LangChain (versiones compatibles)
 langgraph==0.2.0
-langchain==0.2.17
-langchain-core==0.2.43
-langchain-community==0.2.16
-langchain-openai==0.1.25
-langsmith==0.1.147
+langchain==0.2.0
+langchain-core==0.2.0
+langchain-community==0.2.0
+langchain-openai==0.2.0
+langsmith==0.1.0
 typing-extensions>=4.0.0
-redis==5.2.1

@@ -1,66 +1,33 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import type {
-  RegulatoryAnalysis,
-  StreamEvent,
-  SSEError,
-} from "@/lib/types"
-import { queryLegal, streamQuery } from "@/lib/api"
-import Header from "@/components/layout/header"
-import FilterPanel, { type FilterValues } from "@/components/layout/filter-panel"
-import MessageBubble from "@/components/chat/message-bubble"
+import { Send, Loader2, AlertCircle, FileText, Shield, Zap } from "lucide-react"
+import { queryLegal } from "@/lib/api"
+import type { QueryRequest, QueryResponse } from "@/lib/types"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Send, PanelRightOpen, SlidersHorizontal } from "lucide-react"
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
+import { Badge } from "@/components/ui/badge"
 
 interface Message {
   id: string
   role: "user" | "assistant"
-  content?: string
-  analysis?: RegulatoryAnalysis | null
-  isLoading?: boolean
-}
-
-function buildEmptyAnalysis(): RegulatoryAnalysis {
-  return {
-    direct_conclusion: "",
-    regulatory_analysis: "",
-    legal_citations: [],
-    risk_matrix: {
-      ideological_framework: "",
-      constitutional_conflict_risk: "",
-      nationalization_risk: "",
-      regulatory_instability: "",
-      legal_ambiguity: "",
-      arbitration_protection: "",
-    },
-    incentives_detected: {
-      detected: false,
-      type: null,
-      articles: [],
-      description: null,
-    },
-    insufficient_context: false,
-  }
+  content: string
+  sources?: string[]
+  riskMatrix?: any
+  incentives?: any
+  timestamp: Date
+  processingTime?: number
 }
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const [filtersVisible, setFiltersVisible] = useState(true)
-  const [filters, setFilters] = useState<FilterValues>({
-    subsector: "",
-    tipo_norma: "",
-    use_agent: false,
-  })
+  const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const cancelRef = useRef<() => void>(() => {})
-  const queryIdRef = useRef(0)
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -70,174 +37,74 @@ export default function ChatInterface() {
     inputRef.current?.focus()
   }, [])
 
-  useEffect(() => {
-    return () => {
-      cancelRef.current()
-    }
-  }, [])
-
-  const addMessage = (msg: Message) => {
-    setMessages((prev) => [...prev, msg])
-  }
-
-  const updateLastMessage = (updater: (msg: Message) => Message) => {
-    setMessages((prev) => {
-      const updated = [...prev]
-      if (updated.length > 0) {
-        updated[updated.length - 1] = updater(updated[updated.length - 1])
-      }
-      return updated
-    })
-  }
-
   const handleSubmit = async () => {
     const question = input.trim()
     if (!question || isLoading) return
 
-    const queryId = ++queryIdRef.current
-
-    cancelRef.current()
-
-    setInput("")
     setIsLoading(true)
+    setError(null)
 
-    const userMsg: Message = {
-      id: `user-${queryId}`,
+    // Mensaje del usuario
+    const userMessage: Message = {
+      id: Date.now().toString(),
       role: "user",
       content: question,
+      timestamp: new Date(),
     }
-    addMessage(userMsg)
+    setMessages((prev) => [...prev, userMessage])
+    setInput("")
 
-    const assistantId = `assistant-${queryId}`
-    const assistantMsg: Message = {
+    // Mensaje del asistente (loading)
+    const assistantId = (Date.now() + 1).toString()
+    const assistantMessage: Message = {
       id: assistantId,
       role: "assistant",
-      isLoading: true,
+      content: "",
+      timestamp: new Date(),
     }
-    addMessage(assistantMsg)
-
-    const guard = {
-      id: queryId,
-      wrap<T>(fn: (arg: T) => void): (arg: T) => void {
-        return (arg: T) => {
-          if (queryIdRef.current === this.id) fn(arg)
-        }
-      },
-      wrapVoid(fn: () => void): () => void {
-        return () => {
-          if (queryIdRef.current === this.id) fn()
-        }
-      },
-    }
+    setMessages((prev) => [...prev, assistantMessage])
 
     try {
-      const request = {
-        question,
-        subsector: filters.subsector || null,
-        tipo_norma: filters.tipo_norma || null,
-        use_agent: filters.use_agent,
+      const request: QueryRequest = {
+        question: question,
+        subsector: "General",
+        top_k: 5,
+        use_agent: false,
       }
 
-      if (filters.use_agent) {
-        const response = await queryLegal(request)
-        guard.wrap(updateLastMessage)((msg) => ({
-          ...msg,
-          isLoading: false,
-          analysis: response.answer,
-        }))
-        setIsLoading(false)
-      } else {
-        const cancel = streamQuery(
-          request,
-          {
-            onEvent: guard.wrap((raw: StreamEvent) => {
-              switch (raw.event) {
-                case "analysis":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    isLoading: false,
-                    analysis: {
-                      ...(msg.analysis || buildEmptyAnalysis()),
-                      direct_conclusion: raw.direct_conclusion,
-                    },
-                  }))
-                  break
-                case "risk":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    analysis: {
-                      ...(msg.analysis || buildEmptyAnalysis()),
-                      risk_matrix: raw.matrix,
-                    },
-                  }))
-                  break
-                case "incentives":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    analysis: {
-                      ...(msg.analysis || buildEmptyAnalysis()),
-                      incentives_detected: raw.detected,
-                    },
-                  }))
-                  break
-                case "complete":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    analysis: msg.analysis ? { ...msg.analysis } : buildEmptyAnalysis(),
-                  }))
-                  break
-                case "insufficient_context":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    isLoading: false,
-                    analysis: {
-                      ...(msg.analysis || buildEmptyAnalysis()),
-                      insufficient_context: true,
-                    },
-                  }))
-                  break
-                case "error":
-                  updateLastMessage((msg) => ({
-                    ...msg,
-                    isLoading: false,
-                    analysis: {
-                      ...buildEmptyAnalysis(),
-                      direct_conclusion: `Error: ${raw.detail}`,
-                      insufficient_context: true,
-                    },
-                  }))
-                  break
-              }
-            }),
-            onError: guard.wrap((error: SSEError) => {
-              updateLastMessage((msg) => ({
+      const response = await queryLegal(request)
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantId
+            ? {
                 ...msg,
-                isLoading: false,
-                analysis: {
-                  ...buildEmptyAnalysis(),
-                  direct_conclusion: `Error [${error.code}]: ${error.detail}`,
-                  insufficient_context: true,
-                },
-              }))
-            }),
-            onComplete: guard.wrapVoid(() => {
-              setIsLoading(false)
-            }),
-          },
+                content: response.answer?.direct_conclusion || response.answer?.regulatory_analysis || "No se encontró respuesta.",
+                sources: response.sources || [],
+                riskMatrix: response.answer?.risk_matrix,
+                incentives: response.answer?.incentives_detected,
+                processingTime: response.processing_time_ms,
+                timestamp: new Date(),
+              }
+            : msg
         )
+      )
 
-        cancelRef.current = cancel
-      }
     } catch (err) {
-      guard.wrap(updateLastMessage)((msg) => ({
-        ...msg,
-        isLoading: false,
-        analysis: {
-          ...buildEmptyAnalysis(),
-          direct_conclusion: `Error: ${(err as Error).message}`,
-          insufficient_context: true,
-        },
-      }))
+      console.error("Error:", err)
+      setError(err instanceof Error ? err.message : "Error procesando la consulta")
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantId
+            ? {
+                ...msg,
+                content: `❌ Error: ${err instanceof Error ? err.message : "Error procesando la consulta"}`,
+                timestamp: new Date(),
+              }
+            : msg
+        )
+      )
+    } finally {
       setIsLoading(false)
     }
   }
@@ -249,106 +116,128 @@ export default function ChatInterface() {
     }
   }
 
-  return (
-    <div className="flex flex-col h-screen">
-      <Header
-        onToggleFilters={() => setFiltersVisible(!filtersVisible)}
-        filtersVisible={filtersVisible}
-      />
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
+  }
 
-      <div className="flex flex-1 overflow-hidden">
-        {filtersVisible && (
-          <aside className="w-60 border-r bg-sidebar p-4 hidden md:block overflow-y-auto">
-            <FilterPanel filters={filters} onChange={setFilters} />
-          </aside>
+  return (
+    <div className="flex flex-col h-full w-full max-w-4xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b">
+        <div className="flex items-center gap-2">
+          <Zap className="h-5 w-5 text-yellow-500" />
+          <h2 className="font-semibold">LexEnergy Bolivia</h2>
+          <Badge variant="outline" className="ml-2 text-xs">
+            Legal RAG
+          </Badge>
+        </div>
+        {isLoading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Procesando...
+          </div>
+        )}
+      </div>
+
+      {/* Messages */}
+      <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+        {messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground">
+            <FileText className="h-12 w-12 mb-4 opacity-20" />
+            <p className="text-lg font-medium">LexEnergy Bolivia</p>
+            <p className="text-sm max-w-md">
+              Pregunta sobre legislación de energías renovables en Bolivia.
+              <br />
+              Ejemplo: "¿Qué dice la Ley 1604 sobre energías renovables?"
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={cn(
+                  "flex flex-col max-w-[85%]",
+                  msg.role === "user" ? "ml-auto items-end" : "mr-auto items-start"
+                )}
+              >
+                <div
+                  className={cn(
+                    "rounded-lg px-4 py-2",
+                    msg.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted"
+                  )}
+                >
+                  <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                </div>
+
+                {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <FileText className="h-3 w-3" />
+                      <span>Fuentes: {msg.sources.join(", ")}</span>
+                    </div>
+                    {msg.processingTime && (
+                      <span className="ml-2">⏱ {msg.processingTime}ms</span>
+                    )}
+                  </div>
+                )}
+
+                {msg.role === "assistant" && msg.riskMatrix && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <Shield className="h-3 w-3" />
+                      <span>Riesgos: {
+                        Object.entries(msg.riskMatrix)
+                          .filter(([_, v]) => v !== "Low" && v !== "Bajo" && v !== "")
+                          .map(([k, v]) => `${k}: ${v}`)
+                          .join(", ")
+                      }</span>
+                    </div>
+                  </div>
+                )}
+
+                <span className="text-xs text-muted-foreground mt-1">
+                  {formatTime(msg.timestamp)}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
 
-        <div className="md:hidden">
-          <Sheet>
-            <SheetTrigger asChild>
-              <Button variant="outline" size="icon" className="fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full shadow-lg">
-                <SlidersHorizontal className="h-5 w-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left">
-              <h2 className="text-lg font-semibold mb-4">Filters</h2>
-              <FilterPanel filters={filters} onChange={setFilters} />
-            </SheetContent>
-          </Sheet>
-        </div>
-
-        <main className="flex-1 flex flex-col min-w-0">
-          <ScrollArea className="flex-1">
-            <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center pt-20 text-center">
-                  <div className="rounded-full bg-primary/10 p-4 mb-4">
-                    <PanelRightOpen className="h-8 w-8 text-primary" />
-                  </div>
-                  <h2 className="text-xl font-semibold mb-2">
-                    LexEnergy Bolivia
-                  </h2>
-                  <p className="text-sm text-muted-foreground max-w-md">
-                    Ask legal questions about renewable energy investments in
-                    Bolivia. The system retrieves relevant legal documents and
-                    provides structured regulatory analysis.
-                  </p>
-                  <div className="mt-6 grid gap-2 text-left text-sm text-muted-foreground">
-                    <div className="rounded-md border p-3">
-                      <span className="font-medium text-foreground">
-                        Example:{" "}
-                      </span>
-                      &ldquo;What are the requirements for foreign investment in
-                      solar energy projects in Bolivia?&rdquo;
-                    </div>
-                    <div className="rounded-md border p-3">
-                      <span className="font-medium text-foreground">
-                        Example:{" "}
-                      </span>
-                      &ldquo;What incentives exist for renewable energy under DS
-                      5503?&rdquo;
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  role={msg.role}
-                  content={msg.content}
-                  analysis={msg.analysis}
-                  isLoading={msg.isLoading}
-                />
-              ))}
-
-              <div ref={scrollRef} />
-            </div>
-          </ScrollArea>
-
-          <div className="border-t bg-background">
-            <div className="max-w-3xl mx-auto px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Input
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Ask a legal question about renewable energy in Bolivia..."
-                  disabled={isLoading}
-                  className="flex-1"
-                />
-                <Button
-                  onClick={handleSubmit}
-                  disabled={isLoading || !input.trim()}
-                  size="icon"
-                >
-                  <Send className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
+        {error && (
+          <div className="flex items-center gap-2 p-3 mt-4 rounded-lg bg-destructive/10 text-destructive text-sm">
+            <AlertCircle className="h-4 w-4" />
+            <span>{error}</span>
           </div>
-        </main>
+        )}
+      </ScrollArea>
+
+      {/* Input */}
+      <div className="border-t p-4">
+        <div className="flex gap-2">
+          <Input
+            ref={inputRef}
+            placeholder="Pregunta sobre energías renovables en Bolivia..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isLoading}
+            className="flex-1"
+          />
+          <Button
+            onClick={handleSubmit}
+            disabled={!input.trim() || isLoading}
+            size="icon"
+          >
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
       </div>
     </div>
   )

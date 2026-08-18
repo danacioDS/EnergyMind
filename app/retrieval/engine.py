@@ -31,7 +31,7 @@ class RetrievalEngine:
         """Inicializa el retriever híbrido con BM25 y Dense"""
         try:
             # Intentar cargar BM25 desde cache
-            BM25_INDEX_PATH = Path(settings.base_dir) / "cache" / "bm25_index.pkl"
+            BM25_INDEX_PATH = Path(".") / "cache" / "bm25_index.pkl"
             
             loaded = self.hybrid.bm25.load(BM25_INDEX_PATH)
             if loaded:
@@ -81,7 +81,7 @@ class RetrievalEngine:
         bm25_results = []
         try:
             if self.hybrid.bm25.index is not None:
-                bm25_results = await self.hybrid.bm25.search(query, settings.bm25_top_k)
+                bm25_results = self.hybrid.bm25.search(query, settings.bm25_top_k)
             else:
                 logger.warning("BM25 index not available, skipping")
         except Exception as e:

@@ -142,7 +142,11 @@ class QueryService:
             
             if self.redis_enabled:
                 try:
-                    await set_cached(request.question, request.subsector, response.dict() if hasattr(response, 'dict') else response, ttl=3600)
+                    await set_cached(
+                        cache_key,
+                        response.dict() if hasattr(response, 'dict') else response,
+                        ttl=3600
+                    )
                 except Exception as e:
                     logger.warning(f"Error al guardar en caché: {e}")
             
@@ -176,3 +180,7 @@ class QueryService:
         content = request.question + json.dumps(getattr(request, 'metadata_filter', {}))
         return f"query:{hashlib.sha256(content.encode()).hexdigest()}"
 
+    async def initialize(self):
+        """Inicializa las dependencias del servicio."""
+        logger.info("Initializing QueryService...")
+        return self
