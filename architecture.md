@@ -1,366 +1,409 @@
-# EnergyMind — Arquitectura
+# EnergyMind — Architecture
 
-## Descripción General
+## Overview
 
-**EnergyMind** es una plataforma **Legal RAG** especializada en legislación boliviana de energías renovables. Ingiere documentos legales (Constitución, leyes, decretos, resoluciones), los indexa en **Qdrant** y expone un pipeline de recuperación multi-etapa con razonamiento legal vía LLM, servido por **FastAPI** y consumido por un frontend **Next.js 16**.
+**EnergyMind** is a domain-specific RAG (Retrieval-Augmented Generation) system for Bolivian energy regulation. It combines semantic retrieval with Qdrant and lexical retrieval with BM25, processes legal documents at article level, and uses a multi-provider LLM architecture for resilient generation. The system returns traceable sources and can abstain when the retrieved evidence doesn't support an answer.
 
-Este documento describe la arquitectura **tal como está implementada** en el código actual.
-
----
-
-## Arquitectura de Alto Nivel
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            CLIENTE                                      │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │  Frontend Next.js 16 (React 19, shadcn/ui, Tailwind v4)         │  │
-│  │  Puerto 3000 — rewrites /api/* → backend                         │  │
-│  └────────────────────────────┬─────────────────────────────────────┘  │
-│                               │ HTTP + SSE                              │
-├───────────────────────────────┼─────────────────────────────────────────┤
-│                        CAPA API (FastAPI :8000)                         │
-│  ┌───────────────────────────┴───────────────────────────────────────┐  │
-│  │  app/api/routes.py   (prefijo /api/v1)                           │  │
-│  │   POST /query        POST /query/stream                          │  │
-│  │   POST /ingest       GET  /corpus/stats                          │  │
-│  │   GET  /health       GET  /health/ready                          │  │
-│  │  Middlewares: CORS (abierto) + CorrelationID (X-Correlation-ID)  │  │
-│  └───────────────────────────┬───────────────────────────────────────┘  │
-│                               │                                         │
-├───────────────────────────────┼─────────────────────────────────────────┤
-│                        CAPA DE SERVICIOS                                │
-│  ┌───────────────────────────┴───────────────────────────────────────┐  │
-│  │  QueryService        — orquesta: caché → pipeline/agente → caché  │  │
-│  │  SSEStreamManager    — envuelve eventos en protocolo text/event-stream │
-│  │  Redis cache         — caché de respuestas (TTL 1h)               │  │
-│  └───────────────────────────┬───────────────────────────────────────┘  │
-│                               │                                         │
-├───────────────────────────────┼─────────────────────────────────────────┤
-│                     CAPA RAG / AGENTE                                   │
-│  ┌───────────────────────────┴───────────────────────────────────────┐  │
-│  │  RAGPipeline (sin agente)   │   LegalAgentGraph (LangGraph)        │  │
-│  │   retrieve → context → LLM  │   retrieve → analyze → refine (x3)   │  │
-│  │   con soporte streaming     │   → risk_assess → finalize           │  │
-│  │                             │   ⚠ INCOMPLETO (métodos inexistentes)│  │
-│  └───────────────────────────┬───────────────────────────────────────┘  │
-│                               │                                         │
-├───────────────────────────────┼─────────────────────────────────────────┤
-│                    PIPELINE DE RECUPERACIÓN                             │
-│  ┌───────────────────────────┴───────────────────────────────────────┐  │
-│  │  RetrievalEngine                                                  │  │
-│  │                                                                   │  │
-│  │  ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌─────────┐  │  │
-│  │  │Metadata    │   │  BM25      │   │  Dense     │   │ Hybrid  │  │  │
-│  │  │Filter      │   │ (sparse)   │   │ (Qdrant)   │   │ Fusion  │  │  │
-│  │  │(keywords)  │   │ (español)  │   │ cosine     │   │ (alpha) │  │  │
-│  │  └────────────┘   └────────────┘   └────────────┘   └─────────┘  │  │
-│  │                        (en paralelo via gather / threadpool)      │  │
-│  │  ┌────────────────────────────────────────────────────────────┐  │  │
-│  │  │  Reranker (cross-encoder) — DESACTIVADO en producción       │  │  │
-│  │  └────────────────────────────────────────────────────────────┘  │  │
-│  └───────────────────────────┬───────────────────────────────────────┘  │
-│                               │                                         │
-├───────────────────────────────┼─────────────────────────────────────────┤
-│                       CAPA DE INFRAESTRUCTURA                           │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌─────────┐ │
-│  │ Qdrant        │  │ Redis         │  │ Embeddings    │  │ LLMs    │ │
-│  │ (vector store)│  │ (cache)       │  │ MiniLM-L6 384d│  │ Groq →  │ │
-│  │ :6333 REST    │  │ :6379         │  │ (local, CPU)  │  │ Gemini  │ │
-│  │ :6334 gRPC    │  │               │  │               │  │ (API)   │ │
-│  └───────────────┘  └───────────────┘  └───────────────┘  └─────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+This document describes the architecture **as implemented** in the current codebase.
 
 ---
 
-## Desglose de Componentes
+## High-Level Architecture
 
-### 1. Capa API (`app/api/routes.py`)
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           CLIENT LAYER                                    │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │  Frontend · Next.js 16 (React 19, shadcn/ui, Tailwind v4)         │  │
+│  │  Port 3000 — rewrites /api/* → backend                             │  │
+│  │  Chat interface with structured legal analysis panels              │  │
+│  └─────────────────────────────┬──────────────────────────────────────┘  │
+│                                 │ HTTP + SSE                              │
+├─────────────────────────────────┼─────────────────────────────────────────┤
+│                      API LAYER · FastAPI :8000                             │
+│  ┌─────────────────────────────┴──────────────────────────────────────┐  │
+│  │  app/api/routes.py   (prefix /api/v1)                              │  │
+│  │   POST /query        POST /query/stream                             │  │
+│  │   POST /ingest       GET  /corpus/stats                             │  │
+│  │   GET  /health       GET  /health/ready                             │  │
+│  │  Middlewares: CORS (open) + CorrelationID (X-Correlation-ID)       │  │
+│  └─────────────────────────────┬──────────────────────────────────────┘  │
+│                                 │                                         │
+├─────────────────────────────────┼─────────────────────────────────────────┤
+│                       SERVICE LAYER                                        │
+│  ┌─────────────────────────────┴──────────────────────────────────────┐  │
+│  │  QueryService         — orchestrates: cache → pipeline → cache     │  │
+│  │  SSEStreamManager     — wraps events in text/event-stream frames   │  │
+│  │  Redis Cache          — response dedup (TTL 1h)                    │  │
+│  └─────────────────────────────┬──────────────────────────────────────┘  │
+│                                 │                                         │
+├─────────────────────────────────┼─────────────────────────────────────────┤
+│                        RAG / AGENT LAYER                                   │
+│  ┌─────────────────────────────┴──────────────────────────────────────┐  │
+│  │                                                                     │  │
+│  │  RAGPipeline (primary)           LegalAgentGraph (LangGraph)        │  │
+│  │  ┌────────────────────────┐     ┌───────────────────────────┐      │  │
+│  │  │ retrieve → context     │     │ retrieve → analyze         │      │  │
+│  │  │   → LLM generate       │     │   → refine (loop ×3)       │      │  │
+│  │  │   → assemble response  │     │   → risk_assess            │      │  │
+│  │  │                        │     │   → finalize               │      │  │
+│  │  │ Abstains when evidence │     │                            │      │  │
+│  │  │ is insufficient        │     │ ⚠ INCOMPLETE              │      │  │
+│  │  └────────────────────────┘     └───────────────────────────┘      │  │
+│  └─────────────────────────────┬──────────────────────────────────────┘  │
+│                                 │                                         │
+├─────────────────────────────────┼─────────────────────────────────────────┤
+│                    RETRIEVAL ENGINE                                         │
+│  ┌─────────────────────────────┴──────────────────────────────────────┐  │
+│  │  RetrievalEngine                                                            │  │
+│  │                                                                             │  │
+│  │  ┌─────────────┐  ┌─────────────┐                                          │  │
+│  │  │  BM25         │  │  Dense        │  ← parallel via asyncio.gather()     │  │
+│  │  │  (sparse)     │  │  (Qdrant)     │                                       │  │
+│  │  │  Spanish      │  │  MiniLM-L6    │                                       │  │
+│  │  │  legal token  │  │  384-d COSINE │                                       │  │
+│  │  └──────┬───────┘  └──────┬───────┘                                        │  │
+│  │         └──────────┬──────┘                                                 │  │
+│  │                    ▼                                                        │  │
+│  │           ┌────────────────┐                                                │  │
+│  │           │  Hybrid Fusion  │  α = 0.7 (code) / 0.3 (concept) / 0.5 (def) │  │
+│  │           │  min-max norm   │                                               │  │
+│  │           └────────┬───────┘                                                │  │
+│  │                    ▼                                                        │  │
+│  │           ┌────────────────┐                                                │  │
+│  │           │  Reranker       │  cross-encoder (disabled for memory)          │  │
+│  │           └────────┬───────┘                                                │  │
+│  │                    ▼                                                        │  │
+│  │              Top-K (10 → 5)                                                 │  │
+│  └─────────────────────────────┬──────────────────────────────────────┘  │
+│                                 │                                         │
+├─────────────────────────────────┼─────────────────────────────────────────┤
+│                       LLM LAYER · Multi-Provider                           │
+│  ┌─────────────────────────────┴──────────────────────────────────────┐  │
+│  │  LLMRouter ── fallback chain with health tracking:                  │  │
+│  │                                                                     │  │
+│  │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐     │  │
+│  │  │  Groq     │───▶│Cloudflare│───▶│  Gemini   │───▶│ Ollama   │     │  │
+│  │  │  Llama    │    │  Llama    │    │  Flash    │    │  Local   │     │  │
+│  │  │  3.3 70B  │    │  3.1 8B   │    │  2.5      │    │  Llama   │     │  │
+│  │  └──────────┘    └──────────┘    └──────────┘    └──────────┘     │  │
+│  │                                                                     │  │
+│  │  Provider fails → blacklisted → next provider tried                 │  │
+│  │  Success → blacklist reset                                          │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                       INFRASTRUCTURE                                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │  Qdrant      │  │  Redis       │  │  Embeddings   │  │  Legal Corpus   │  │
+│  │  Vector DB   │  │  Cache       │  │  MiniLM-L6    │  │  45 articles    │  │
+│  │  :6333 REST  │  │  :6379       │  │  384-d CPU    │  │  5 doc types    │  │
+│  │  :6334 gRPC  │  │              │  │               │  │                 │  │
+│  └─────────────┘  └─────────────┘  └──────────────┘  └────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-| Endpoint | Método | Descripción | Estado |
+---
+
+## Component Breakdown
+
+### 1. API Layer (`app/api/routes.py`)
+
+| Endpoint | Method | Description | Status |
 |----------|--------|-------------|--------|
-| `/api/v1/query` | POST | Query RAG bloqueante | ⚠ 503 (state.ready nunca se asigna) |
-| `/api/v1/query/stream` | POST | Query streaming SSE | ⚠ 503 |
-| `/api/v1/ingest` | POST | Dispara la ingesta | ❌ 500 (`await` sobre función sync) |
-| `/api/v1/corpus/stats` | GET | Estadísticas del corpus | ⚠ Parcial (solo total_units) |
-| `/api/v1/health` | GET | Liveness | ✅ Devuelve `{"status":"alive"}` |
-| `/api/v1/health/ready` | GET | Readiness | ❌ Duplicada (routes.py + main.py), 503 siempre |
+| `/api/v1/query` | POST | Blocking RAG query | ⚠ 503 (app.state.ready never set) |
+| `/api/v1/query/stream` | POST | Streaming SSE query | ⚠ 503 |
+| `/api/v1/ingest` | POST | Trigger ingestion | ❌ 500 (await on sync func) |
+| `/api/v1/corpus/stats` | GET | Corpus statistics | ⚠ Partial (total_units only) |
+| `/api/v1/health` | GET | Liveness | ✅ `{"status":"alive"}` |
+| `/api/v1/health/ready` | GET | Readiness | ❌ Duplicated + 503 always |
 
 **Middlewares** (`app/main.py`):
-- **CORS**: `allow_origins=["*"]`, con `allow_credentials=True` (configuración por defecto, no lee `FRONTEND_ORIGINS`).
-- **CorrelationIDMiddleware**: inyecta `X-Correlation-ID` y lo usa en logs de loguru.
+- **CORS**: `allow_origins=["*"]`, `allow_credentials=True`
+- **CorrelationIDMiddleware**: injects `X-Correlation-ID` into loguru context
 
-### 2. Capa de Servicios (`app/services/`)
+### 2. Service Layer (`app/services/`)
 
-- **`QueryService`** — orquesta el flujo: genera cache key → lee Redis → enruta a `RAGPipeline` (o `LegalAgentGraph` si `use_agent=true`) → cachea la respuesta → añade `processing_time_ms`.
-- **`SSEStreamManager`** — convierte el generador async de eventos en frames SSE (`event: <tipo>\n data: {...}\n\n`), con evento `error` ante excepciones.
-- **`cache.py`** — wrapper async de Redis (`init_redis`, `get_cached`, `set_cached`). Nota: el servicio llama con una clave ya hasheada y el módulo la re-hashea (doble hash, consistente pero redundante).
+- **`QueryService`** — orchestrates the flow: cache key generation → Redis lookup → `RAGPipeline` (or `LegalAgentGraph` if `use_agent=true`) → cache response → attach `processing_time_ms`.
+- **`SSEStreamManager`** — wraps async event generators into SSE frames (`event: <type>\n data: {...}\n\n`), with `error` event on exceptions.
+- **`cache.py`** — async Redis wrapper (`init_redis`, `get_cached`, `set_cached`). Uses double-hashed keys for consistency.
 
-### 3. Capa RAG / Agente
+### 3. RAG / Agent Layer
 
 #### RAGPipeline (`app/rag/pipeline.py`)
-1. `retrieve()` → `RetrievalEngine`
-2. Si no hay documentos → respuesta de "contexto insuficiente" (detecta idioma es/ing/pt).
-3. `_build_context()` — formatea los documentos en bloques `[N] <id>:\n<texto>` (max 5).
-4. Genera un **prompt inline** (no usa `app/prompts/`).
-5. `LegalChain.generate()` → `LLMRouter`.
-6. Ensambla `QueryResponse` con **risk_matrix e incentivos hardcodeados**.
 
-#### LegalAgentGraph (`app/agents/graph.py`) — ⚠ INCOMPLETO
-Grafo LangGraph con 5 nodos:
+The primary query path. Steps:
+1. `retrieve()` → `RetrievalEngine` (BM25 + dense + fusion + rerank)
+2. If no documents → responds with "insufficient context" (detects language: es/en/pt)
+3. `_build_context()` — formats documents as `[N] <id>:\n<text>` blocks (max 5)
+4. Generates an **inline prompt** (does not use `app/prompts/`)
+5. `LegalChain.generate()` → `LLMRouter` → provider chain
+6. Assembles `QueryResponse` with risk_matrix and incentives
+
+**Abstention**: the system explicitly sets `insufficient_context: true` when retrieved evidence is too weak to support a confident answer, rather than fabricating.
+
+#### LegalAgentGraph (`app/agents/graph.py`) — ⚠ INCOMPLETE
+
+LangGraph state machine with 5 nodes:
 ```
 retrieve → analyze ──(needs_refinement && iter<3)──→ refine → retrieve
-                  └──(else)──→ risk_assess → finalize → END
+                    └──(else)──→ risk_assess → finalize → END
 ```
-Problemas que rompen el modo agente:
-- `_analyze_node` llama `chain.structured_answer(...)` — **no existe** en `LegalChain`.
-- `_risk_assess_node` llama `chain.analyze_risk(...)` — **no existe**.
-- `_refine_node` usa `chain.llm.ainvoke(...)` — `LegalChain` no tiene atributo `llm`.
-- `QueryService.process_query` pasa `request` (QueryRequest) pero `run()` espera `(question, subsector, tipo_norma)`.
 
-### 4. Pipeline de Recuperación (`app/retrieval/`)
+Current issues preventing operation:
+- `_analyze_node` calls `chain.structured_answer(...)` — does not exist on `LegalChain`
+- `_risk_assess_node` calls `chain.analyze_risk(...)` — does not exist
+- `_refine_node` uses `chain.llm.ainvoke(...)` — `LegalChain` has no `llm` attribute
+- `QueryService` passes `QueryRequest` but `run()` expects `(question, subsector, tipo_norma)`
 
-Flujo por query (`RetrievalEngine.retrieve`):
+### 4. Retrieval Engine (`app/retrieval/`)
+
+Per-query flow (`RetrievalEngine.retrieve`):
 
 ```
 Query
   │
-  ├─ 1. BM25 (sparse) ──────────────── asyncio: hybrid.bm25.search()
-  │     • Tokenizador español legal (stopwords jurídicas)
-  │     • Índice construido al inicio desde Qdrant (scroll_all) y
-  │       persistido en cache/bm25_index.pkl
+  ├─ 1. Metadata Filter ──────────────── keyword → filter inference
+  │     "solar" → subsector: Solar
+  │     "ley 1604" → norma_id: 1604
+  │     Always forces: vigente: True
   │
-  ├─ 2. Dense (vectorial) ──────────── run_in_executor: qdrant.search()
-  │     • Embeddings MiniLM-L6-v2 (384-d) → Qdrant búsqueda COSINE
-  │     • Filtros Qdrant (payload index) si los hubiera
+  ├─ 2. BM25 (sparse) ──────────────── asyncio: hybrid.bm25.search()
+  │     • Spanish legal tokenizer (custom stopwords)
+  │     • Index built at startup from Qdrant (scroll_all)
+  │     • Persisted to cache/bm25_index.pkl
   │
-  ├─ 3. Fusión híbrida ─────────────── HybridRetriever._fusion()
-  │     • Normalización min-max por lista
+  ├─ 3. Dense (vectorial) ──────────── run_in_executor: qdrant.search()
+  │     • Embeddings MiniLM-L6-v2 (384-d) → Qdrant COSINE search
+  │     • Qdrant payload filters (if available)
+  │
+  ├─ 4. Hybrid Fusion ──────────────── HybridRetriever._fusion()
+  │     • Min-max normalization per list
   │     • score = α·bm25_norm + (1-α)·dense_norm
-  │     • α adaptativo: 0.7 (código legal) / 0.3 (concepto) / 0.5 default
+  │     • Adaptive α: 0.7 (legal code) / 0.3 (concept) / 0.5 (default)
   │
-  ├─ 4. Reranking ──────────────────── Reranker (cross-encoder)
-  │     • DESACTIVADO (no-op) para Render Free
-  │     • ⚠ await sobre método síncrono → excepción silenciosa → fallback
+  ├─ 5. Reranking ──────────────────── Reranker (cross-encoder)
+  │     • DISABLED (no-op) for Render Free memory
+  │     • ⚠ await on sync method → silent exception → fallback
   │
-  └─ 5. Top-K final ────────────────── reranked[:top_k] (default 10, final 5)
+  └─ 6. Top-K final ────────────────── reranked[:top_k] (default 10, final 5)
 ```
 
-**MetadataFilter** — mapa keyword→filtro (solar→subsector Solar, ley 1604→norma_id, inversión→enfoque, etc.). Siempre fuerza `vigente: True`. ⚠ Los filtros del `QueryRequest` no se propagan aquí (ver report.md §7.4).
+**MetadataFilter** — keyword→filter map (solar→subsector Solar, ley 1604→norma_id, inversión→enfoque, etc.). Always injects `vigente: True`. ⚠ Request filters from `QueryRequest` are not propagated here (see report §7.4).
 
-### 5. Capa LLM (`app/llm/`)
+### 5. LLM Layer (`app/llm/`)
 
-- **`LLMRouter`** — lista de proveedores con fallback:
-  1. **Groq** (primario): `llama-3.3-70b-versatile` vía `groq` SDK, `temperature=0.1`.
-  2. **Gemini** (fallback): `gemini-2.0-flash` vía `google-generativeai`.
-- Ante fallo de un proveedor lo añade a `failed_providers` y lo salta en la siguiente llamada; resetea la lista al tener éxito.
-- `generate()` es **síncrono** → bloquea el event loop.
-- Los clientes SDK se crean en cada llamada (no hay pool).
+- **`LLMRouter`** — provider list with automatic fallback:
+  1. **Groq** (primary): `llama-3.3-70b-versatile` via `groq` SDK, `temperature=0.1`
+  2. **Cloudflare** (fallback): `llama-3.1-8b` via `cloudflare-ai` SDK
+  3. **Gemini** (fallback): `gemini-2.0-flash` via `google-generativeai`
+  4. **Ollama** (local fallback): `llama-3.2-1b` via HTTP
+- On provider failure: adds to `failed_providers`, skips in next call; resets on success
+- `generate()` is **synchronous** → blocks the event loop during LLM calls (2-10s)
+- SDK clients are recreated per call (no pooling)
 
-### 6. Pipeline de Ingestión (`ingestion/`)
+### 6. Ingestion Pipeline (`ingestion/`)
 
 ```
 corpus/raw/*.txt
   │
-  ├─ LegalTextNormalizer ── quita headers/footers, normaliza "Art."→"Artículo",
-  │                          normaliza IDs de norma (Ley N°, DS)
-  ├─ LegalDocumentParser ── patrón por tipo de norma para dividir artículos,
-  │                          extrae número de artículo, detecta tipo si falta
-  ├─ Metadata Extractor ── risk_flags, subsector, enfoque, tipo_norma, incentivo
-  │                          (basado en keywords) + override por CORPUS_DEFINITIONS
-  ├─ all_units.json ────── exporta a corpus/normalized/all_units.json
-  └─ QdrantStore.upsert ── embeddings en batch → upsert de 32 en 32
-                            IDs UUID5(unit.id) → idempotente
+  ├─ LegalTextNormalizer ── removes headers/footers, normalizes "Art."→"Artículo",
+  │                          normalizes norm IDs (Ley N°, DS)
+  ├─ LegalDocumentParser ── regex pattern per norm type to split articles,
+  │                          extracts article number, detects type if missing
+  ├─ Metadata Extractor ── risk_flags, subsector, enfoque, tipo_norma, incentive
+  │                          (keyword-based) + override from CORPUS_DEFINITIONS
+  ├─ all_units.json ────── exports to corpus/normalized/all_units.json
+  └─ QdrantStore.upsert ── embeddings in batch → upsert of 32
+                            UUID5(unit.id) → idempotent
 ```
 
 **CORPUS_DEFINITIONS** (`ingestion/pipeline.py`):
 
-| Archivo | Tipo | ID | Metadata override |
-|---------|------|----|-------------------|
+| File | Type | ID | Metadata Override |
+|------|------|----|-------------------|
 | `constitucion_bolivia_articulos_seleccionados.txt` | Constitucion | CPE | subsector General, enfoque Regulacion, risk [Constitutional Hierarchy] |
 | `ley_1604_1994.txt` | Ley | 1604 | risk [Market Framework] |
 | `ley_943_modificaciones.txt` | Ley | 943 | — |
 | `ds_5503_2025.txt` | Decreto Supremo | 5503 | enfoque Inversion, risk [Regulatory Instability, Nationalization Risk] |
 
-> ⚠ `aetn_resoluciones_muestra.txt` existe pero no está en las definiciones.
+> ⚠ `aetn_resoluciones_muestra.txt` exists but is **not in** `CORPUS_DEFINITIONS`.
 
-**Scrapers** (`ingestion/lexivox/`, `ingestion/aetn/`) — clientes httpx async para LexiVox y AETN; implementados pero **no conectados** al pipeline.
+**Scrapers** (`ingestion/lexivox/`, `ingestion/aetn/`) — httpx async clients for LexiVox and AETN; implemented but **not connected** to the pipeline.
 
-### 7. Core / Recursos (`core/`)
+### 7. Core / Resources (`core/`)
 
-- **`embeddings.py`** — singleton thread-safe (`get_embedder()`) con lazy-load del modelo `all-MiniLM-L6-v2` en CPU.
-- **`resource_manager.py`** — `ResourceManager.warmup()` carga embedder y Qdrant en paralelo; `embedder()`/`qdrant()` lanzan error si no hubo warmup.
+- **`embeddings.py`** — thread-safe singleton (`get_embedder()`) with lazy-loading of `all-MiniLM-L6-v2` on CPU.
+- **`resource_manager.py`** — `ResourceManager.warmup()` loads embedder and Qdrant in parallel; `embedder()`/`qdrant()` raise errors if no warmup occurred.
 
 ### 8. Vector Store (`vectorstore/qdrant_client.py`)
 
-- `QdrantStore` — wrapper **síncrono** alrededor de `qdrant-client`.
-- Colección `energymind`, vectores de 384-d, métrica COSINE.
-- Índices de payload: `tipo_norma`, `norma_id`, `subsector`, `enfoque`, `sector` (keyword) + `vigente`, `renewable_incentive` (bool).
-- `search()` con `build_filter()` (condiciones MUST) y `scroll_all()` para bootstrap del BM25.
+- `QdrantStore` — **synchronous** wrapper around `qdrant-client`.
+- Collection `energymind`, 384-d vectors, COSINE distance.
+- Payload indexes: `tipo_norma`, `norma_id`, `subsector`, `enfoque`, `sector` (keyword) + `vigente`, `renewable_incentive` (bool).
+- `search()` with `build_filter()` (MUST conditions) and `scroll_all()` for BM25 bootstrap.
 
-### 9. Modelos de Datos (`app/models/`)
+### 9. Data Models (`app/models/`)
 
-- **`LegalUnit`** — unidad legal (artículo) con metadatos ricos: `id`, `tipo_norma`, `norma_id`, `articulo`, `tema`, `vigente`, `sector`, `subsector`, `enfoque`, `risk_flags`, `renewable_incentive`, `texto`.
+- **`LegalUnit`** — article-level legal unit with rich metadata: `id`, `tipo_norma`, `norma_id`, `articulo`, `tema`, `vigente`, `sector`, `subsector`, `enfoque`, `risk_flags`, `renewable_incentive`, `texto`.
 - **`QueryRequest`** — `question`, `subsector`, `tipo_norma`, `vigente`, `top_k`, `use_agent`.
 - **`QueryResponse`** — `question`, `answer: RegulatoryAnalysis` (direct_conclusion, regulatory_analysis, legal_citations, risk_matrix, incentives_detected, insufficient_context), `sources`, `processing_time_ms`, `cached`.
-- **`StructuredLegalResponse`** — schema del agente (sin uso efectivo).
 
 ### 10. Frontend (`frontend/`)
 
-- **Next.js 16** con App Router, React 19, TypeScript, Tailwind v4.
-- **`lib/api.ts`** — cliente SSE robusto: retries con backoff exponencial (máx. 3), timeout de inactividad (60s), guardas de secuencia `seq`, `Last-Event-Id`, soporte `AbortSignal`.
-- **`lib/types.ts`** — contratos TS alineados con el schema del backend (StreamEvent: start, retrieval, analysis, risk, incentives, heartbeat, insufficient_context, complete, error).
-- **`chat-interface.tsx`** — vista de chat: modo bloqueante (`use_agent`) o streaming (SSE); render de análisis estructurado.
-- **`stats/page.tsx`** — dashboard con métricas y gráficos recharts.
+- **Next.js 16** with App Router, React 19, TypeScript, Tailwind v4.
+- **`lib/api.ts`** — robust SSE client: retries with exponential backoff (max 3), inactivity timeout (60s), sequence guards (`seq`, `Last-Event-Id`), `AbortSignal` support.
+- **`lib/types.ts`** — TypeScript interfaces aligned with backend schemas (StreamEvent: start, retrieval, analysis, risk, incentives, heartbeat, insufficient_context, complete, error).
+- **`chat-interface.tsx`** — chat view: blocking mode (`use_agent`) or streaming (SSE); renders structured analysis.
+- **`stats/page.tsx`** — dashboard with recharts metrics.
 - **`next.config.ts`** — rewrites `/api/:path*` → `${API_URL}` (default localhost:8000).
 
 ---
 
-## Flujo de Datos: Ciclo de Vida de una Query
+## Data Flow: Query Lifecycle
 
 ```
-1.  Frontend → POST /api/v1/query {question, subsector, tipo_norma, use_agent}
-2.  FastAPI (CORS + CorrelationID) → routes.py
-3.  get_query_service() → exige app.state.ready ⚠ (nunca se asigna → 503)
-4.  QueryService.process_query(request)
-5.    → _get_cache_key() (sha256 de question + filtros)
-6.    → Redis get_cached (si hit → respuesta cacheada)
-7.    → RAGPipeline.query(request)  [o agent.run() — roto]
-8.      → RetrievalEngine.retrieve(query, metadata_filter=None ⚠)
-9.        → BM25 (async) ‖ Dense vía Qdrant (threadpool)
-10.       → HybridRetriever._fusion(alpha adaptativo)
-11.       → Reranker (no-op) → top_k
-12.     → _build_context(documents[:5])
-13.     → LegalChain.generate(prompt) → LLMRouter → Groq → Gemini
-14.     → QueryResponse con risk_matrix/incentives hardcodeados
+ 1.  Frontend → POST /api/v1/query {question, subsector, tipo_norma, use_agent}
+ 2.  FastAPI (CORS + CorrelationID) → routes.py
+ 3.  get_query_service() → requires app.state.ready ⚠ (never set → 503)
+ 4.  QueryService.process_query(request)
+ 5.    → _get_cache_key() (sha256 of question + filters)
+ 6.    → Redis get_cached (if hit → return cached response)
+ 7.    → RAGPipeline.query(request)  [or agent.run() — broken]
+ 8.      → RetrievalEngine.retrieve(query, metadata_filter=None ⚠)
+ 9.        → BM25 (async) ‖ Dense via Qdrant (threadpool)
+10.        → HybridRetriever._fusion(adaptive alpha)
+11.        → Reranker (no-op) → top_k
+12.      → _build_context(documents[:5])
+13.      → LegalChain.generate(prompt) → LLMRouter → Groq → Gemini
+14.      → QueryResponse with risk_matrix/incentives
 15.  QueryService → Redis set_cached (TTL 3600s)
-16.  → JSON al cliente
+16.  → JSON to client
 ```
 
-### Flujo SSE (`/query/stream`)
+### SSE Flow (`/query/stream`)
 
-`start` → `retrieval_start` → `retrieval_complete` → `generation_start` → `chunk` (simulado, troceando el texto) → `sources` → `complete`.
+`start` → `retrieval_start` → `retrieval_complete` → `generation_start` → `chunk` (simulated, text splitting) → `sources` → `complete`.
 
-> Nota: los tipos de evento documentados en el frontend (`analysis`, `risk`, `incentives`, `heartbeat`, `insufficient_context`) **no son emitidos** por el backend actual; el stream real solo emite `start/retrieval_start/retrieval_complete/generation_start/chunk/sources/complete`.
+> Note: event types documented in the frontend (`analysis`, `risk`, `incentives`, `heartbeat`, `insufficient_context`) **are not emitted** by the current backend; the real stream only emits `start/retrieval_start/retrieval_complete/generation_start/chunk/sources/complete`.
 
 ---
 
-## Arranque y Ciclo de Vida
+## Startup and Lifecycle
 
 ```
-1. uvicorn app.main:app → FastAPI lifespan
-2. setup_logging() → loguru con correlation_id
-3. lifespan: _warmup_started=True → asyncio.create_task(_background_init)
-4. _background_init → ResourceManager.warmup()
-      ├─ _load_embedder (threadpool)  — MiniLM-L6-v2
-      └─ _load_qdrant                 — QdrantClient + ensure collection
-   → _warmup_complete=True (global)
-5. ⚠ app.state.ready NUNCA se asigna → todos los endpoints de query dan 503
-6. Readiness expuesto por 2 rutas con la misma URL (inconsistente)
+ 1. uvicorn app.main:app → FastAPI lifespan
+ 2. setup_logging() → loguru with correlation_id
+ 3. lifespan: _warmup_started=True → asyncio.create_task(_background_init)
+ 4. _background_init → ResourceManager.warmup()
+       ├─ _load_embedder (threadpool)  — MiniLM-L6-v2
+       └─ _load_qdrant                 — QdrantClient + ensure collection
+    → _warmup_complete=True (global)
+ 5. ⚠ app.state.ready NEVER set → all query endpoints return 503
+ 6. Readiness exposed by 2 routes with same URL (inconsistent)
 ```
 
-> El diseño previsto era: warmup en background + gating de readiness (503 → 200) y `QueryService` iniciado en paralelo (`_init_pipeline`, `_init_agent`, `_init_redis`). Esos métodos existen en `QueryService` pero **nunca se invocan** desde el lifespan.
+> The intended design was: background warmup + readiness gating (503 → 200) and `QueryService` initialized in parallel (`_init_pipeline`, `_init_agent`, `_init_redis`). These methods exist in `QueryService` but are **never invoked** from the lifespan.
 
 ---
 
-## Stack Tecnológico
+## Technology Stack
 
-| Categoría | Tecnología |
-|-----------|-----------|
-| **Runtime** | Python 3.11.9 |
-| **API** | FastAPI 0.115 + uvicorn |
-| **RAG** | LangChain 0.2 / LangGraph 0.2 (agente incompleto) |
-| **Vector Store** | Qdrant 1.13 (colección `energymind`, COSINE, 384-d) |
-| **Embeddings** | sentence-transformers `all-MiniLM-L6-v2` (CPU) |
-| **Reranker** | cross-encoder (config) — desactivado |
-| **Sparse** | rank-bm25 (BM25Okapi) + tokenizador español |
-| **LLM** | Groq `llama-3.3-70b-versatile` → Gemini `gemini-2.0-flash` |
-| **Cache** | Redis 7 (async redis-py) |
-| **Validation** | Pydantic v2 / pydantic-settings |
-| **Logging** | loguru con correlation IDs |
-| **Frontend** | Next.js 16, React 19, shadcn/ui, Tailwind v4, recharts |
-| **Infra** | Docker Compose, multi-stage Dockerfile, render.yaml |
-| **Tests** | pytest + pytest-asyncio |
-| **Eval** | RAGAS (script) |
+| Category | Technology |
+|----------|-----------|
+| Runtime | Python 3.11.9 |
+| API | FastAPI 0.115 + uvicorn |
+| RAG | LangChain 0.2 / LangGraph 0.2 (incomplete agent) |
+| Vector Store | Qdrant 1.13 (collection `energymind`, COSINE, 384-d) |
+| Embeddings | sentence-transformers `all-MiniLM-L6-v2` (CPU) |
+| Reranker | cross-encoder (config) — disabled |
+| Sparse | rank-bm25 (BM25Okapi) + Spanish legal tokenizer |
+| LLM | Groq `llama-3.3-70b-versatile` → Gemini `gemini-2.0-flash` |
+| Cache | Redis 7 (async redis-py) |
+| Validation | Pydantic v2 / pydantic-settings |
+| Logging | loguru with correlation IDs |
+| Frontend | Next.js 16, React 19, shadcn/ui, Tailwind v4, recharts |
+| Infra | Docker Compose, multi-stage Dockerfile, render.yaml |
+| Tests | pytest + pytest-asyncio |
+| Eval | RAGAS (script) |
 
 ---
 
-## Despliegue
+## Deployment
 
 `docker/docker-compose.yml`:
 
-| Servicio | Imagen | Puerto | Volumen |
-|----------|--------|--------|---------|
+| Service | Image | Port | Volume |
+|---------|-------|------|--------|
 | `qdrant` | qdrant/qdrant:v1.13.2 | 6333 (REST) / 6334 (gRPC) | `qdrant_storage` |
 | `redis` | redis:7-alpine | 6379 | `redis_data` |
 | `lexenergy-api` | build multi-stage | 8000 | corpus/, logs/ |
 | `lexenergy-frontend` | build frontend | 3000 | — |
 
-Notas:
-- `lexenergy-api` monta `corpus/` y `logs/`, lee `../.env`, y conecta `host.docker.internal` para Ollama (base de datos LLM local opcional).
-- Dockerfile multi-stage: build instala torch CPU y descarga el modelo de embeddings durante el build; la imagen final copia site-packages, caché HF y código.
-- ⚠ `Dockerfile` contiene un `HF_TOKEN` hardcodeado (líneas 27 y 56).
-- `render.yaml` despliega el API en el plan free de Render.
+Notes:
+- `lexenergy-api` mounts `corpus/` and `logs/`, reads `../.env`, and connects `host.docker.internal` for Ollama (optional local LLM).
+- Multi-stage Dockerfile: build stage installs torch CPU and downloads the embedding model; final image copies site-packages, HF cache, and code.
+- ⚠ `Dockerfile` contains a hardcoded `HF_TOKEN` (lines 27 and 56).
+- `render.yaml` deploys the API on Render Free tier.
 
 ---
 
-## Estructura del Proyecto
+## Project Structure
 
 ```
 energymind/
-├── app/                    # Backend FastAPI
-│   ├── api/routes.py       # Endpoints REST + SSE
+├── app/                    # FastAPI backend
+│   ├── api/routes.py       # REST endpoints + SSE
 │   ├── rag/                # RAGPipeline, LegalChain, ContextBuilder
 │   ├── retrieval/          # BM25, dense, hybrid, reranker, metadata filter
-│   ├── agents/graph.py     # Grafo LangGraph (incompleto)
-│   ├── llm/                # Proveedores + router con fallback
-│   ├── models/             # Schemas Pydantic
+│   ├── agents/graph.py     # LangGraph graph (incomplete)
+│   ├── llm/                # Providers + router with fallback
+│   ├── models/             # Pydantic schemas
 │   ├── services/           # QueryService, SSE, Redis cache
-│   ├── prompts/            # Plantillas de prompts legales
-│   ├── config.py           # Configuración (pydantic-settings)
-│   └── main.py             # App FastAPI + lifespan
+│   ├── prompts/            # Legal prompt templates
+│   ├── config.py           # Configuration (pydantic-settings)
+│   └── main.py             # FastAPI app + lifespan
 ├── core/                   # Embeddings singleton + ResourceManager
-├── ingestion/              # Parsing, normalización, metadata, scrapers
-├── vectorstore/            # Wrapper Qdrant
+├── ingestion/              # Parsing, normalization, metadata, scrapers
+├── vectorstore/            # Qdrant wrapper
 ├── corpus/                 # raw / processed / normalized
-├── cache/                  # Índice BM25 persistido
+├── cache/                  # Persisted BM25 index
 ├── frontend/               # Next.js 16 (chat + stats)
 ├── tests/                  # Unit + golden regression
-├── evaluation/             # Script RAGAS
+├── evaluation/             # RAGAS evaluation script
 └── docker/                 # Dockerfile + docker-compose.yml
 ```
 
 ---
 
-## Divergencias Documentación vs. Implementación
+## Documentation vs. Implementation Divergences
 
-| Documentado (README/arch previos) | Realidad actual |
-|-----------------------------------|-----------------|
+| Documented (README/prev arch) | Actual |
+|-------------------------------|--------|
 | BGE-M3 embeddings (1024-d) | `all-MiniLM-L6-v2` (384-d) |
-| Tokenización BM25 con jieba | Tokenizador español legal propio |
-| Reranker BGE-reranker-large activo | Reranker **desactivado** (no-op) |
-| Eventos SSE: analysis/risk/incentives/heartbeat | Solo start/retrieval/generation/chunk/sources/complete |
-| Readiness 200 tras warmup | 503 permanente (`app.state.ready` nunca setea) |
-| Modo agente funcional | Métodos inexistentes → crash |
-| Ingesta vía API | `await` sobre función sync → 500 |
-| Risk matrix derivada del contenido | Valores hardcodeados |
-| Scrapers LexiVox/AETN conectados | Implementados, no usados |
-| RAGAS funcional | Script con API desactualizada |
+| BM25 tokenization with jieba | Custom Spanish legal tokenizer |
+| Active BGE-reranker-large | Reranker **disabled** (no-op) |
+| SSE events: analysis/risk/incentives/heartbeat | Only start/retrieval/generation/chunk/sources/complete |
+| Readiness 200 after warmup | Permanent 503 (`app.state.ready` never set) |
+| Working agent mode | Nonexistent methods → crash |
+| Ingestion via API | `await` on sync func → 500 |
+| Risk matrix derived from content | Hardcoded values |
+| Scrapers LexiVox/AETN connected | Implemented, not used |
+| Functional RAGAS | Script with outdated API |
 
 ---
 
-## Diagrama de Secuencia (Ingesta)
+## Ingestion Sequence Diagram
 
 ```
 CLI/API                          IngestionPipeline                    Qdrant
   │  ingest                            │                                │
   ├─► run() ──────────────────────────►│                                │
   │     process_raw_files()            │                                │
-  │       para cada CORPUS_DEFINITION  │                                │
+  │       for each CORPUS_DEFINITION   │                                │
   │         parse_file()               │                                │
   │           normalize() → split_articles() → LegalUnit[]             │
-  │         aplicar metadata override  │                                │
+  │         apply metadata override     │                                │
   │       to_json() → all_units.json   │                                │
   │     index_to_qdrant(units)         │                                │
   │       QdrantStore.initialize() ────┼──────────────────────────────►│
@@ -371,19 +414,19 @@ CLI/API                          IngestionPipeline                    Qdrant
 
 ---
 
-## Referencia Rápida de Archivos Clave
+## Quick Reference: Key Files
 
-| Archivo | Responsabilidad |
-|---------|-----------------|
-| `app/main.py` | App FastAPI, lifespan, warmup background, readiness global |
-| `app/api/routes.py` | Endpoints, dependency injection del QueryService |
-| `app/services/query_service.py` | Orquestación de queries + caché |
-| `app/rag/pipeline.py` | Pipeline RAG (retrieve → context → generate) |
-| `app/retrieval/engine.py` | Motor de recuperación multi-etapa |
-| `app/retrieval/hybrid.py` | Fusión híbrida con alpha adaptativo |
-| `app/retrieval/bm25.py` | Índice BM25 español + persistencia |
-| `vectorstore/qdrant_client.py` | Wrapper Qdrant (search, upsert, filtros) |
-| `ingestion/pipeline.py` | Definición del corpus + flujo de ingesta |
-| `core/runtime/resource_manager.py` | Warmup de embedder y Qdrant |
-| `frontend/src/lib/api.ts` | Cliente SSE con retries |
-| `docker/docker-compose.yml` | Orquestación de servicios |
+| File | Responsibility |
+|------|----------------|
+| `app/main.py` | FastAPI app, lifespan, background warmup, global readiness |
+| `app/api/routes.py` | Endpoints, QueryService dependency injection |
+| `app/services/query_service.py` | Query orchestration + cache |
+| `app/rag/pipeline.py` | RAG pipeline (retrieve → context → generate) |
+| `app/retrieval/engine.py` | Multi-stage retrieval engine |
+| `app/retrieval/hybrid.py` | Hybrid fusion with adaptive alpha |
+| `app/retrieval/bm25.py` | Spanish BM25 index + persistence |
+| `vectorstore/qdrant_client.py` | Qdrant wrapper (search, upsert, filters) |
+| `ingestion/pipeline.py` | Corpus definitions + ingestion flow |
+| `core/runtime/resource_manager.py` | Embedder and Qdrant warmup |
+| `frontend/src/lib/api.ts` | SSE client with retries |
+| `docker/docker-compose.yml` | Service orchestration |

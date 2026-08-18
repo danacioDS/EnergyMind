@@ -2,7 +2,9 @@
 
 ## 1. Resumen del Proyecto
 
-**EnergyMind** (también llamado **LexEnergy Bolivia**) es una plataforma de **RAG Legal (Retrieval-Augmented Generation)** especializada en la legislación boliviana de energías renovables. El sistema ingiere documentos legales (Constitución Política del Estado, Ley de Electricidad 1604, Ley 943, Decreto Supremo 5503, resoluciones AETN), los indexa en el vector store Qdrant y expone un pipeline de recuperación multi-etapa con razonamiento legal vía LLM, usando **FastAPI** en el backend y **Next.js 16** en el frontend.
+**EnergyMind** (también llamado **LexEnergy Bolivia**) es un sistema de **RAG (Retrieval-Augmented Generation) de dominio específico** para la regulación energética boliviana. Combina recuperación semántica con Qdrant y recuperación léxica con BM25, procesa documentos legales a nivel de artículos, y utiliza una arquitectura LLM multi-proveedor para generación resiliente. El sistema retorna fuentes rastreables y, importantemente, puede **abstenerse** cuando la evidencia recuperada no soporta una respuesta.
+
+> **El desafío principal** fue hacer que documentos legales heterogéneos fueran recuperables de forma confiable a nivel de artículos, preservando la procedencia y evitando alucinaciones. Esto se resolvió combinando recuperación densa y léxica, metadatos legales estructurados, y una capa LLM restringida por la evidencia recuperada.
 
 ### Propósito
 Reducir el tiempo de investigación legal de horas a segundos, entregando respuestas estructuradas con citas legales verificadas, matriz de riesgos y detección de incentivos renovables.
@@ -10,8 +12,6 @@ Reducir el tiempo de investigación legal de horas a segundos, entregando respue
 ---
 
 ## 2. Contexto de Negocio
-
-El repositorio incluye `business_pitch.md`, que posiciona el producto como un asistente legal premium:
 
 | Aspecto | Detalle |
 |---------|---------|
@@ -35,7 +35,7 @@ El código cubre la base funcional del pitch (RAG, streaming, citaciones, riesgo
 | **Embeddings** | `all-MiniLM-L6-v2` (384-d) | Se abandonó BGE-M3 por memoria en Render Free |
 | **Reranker** | Cross-encoder (config) | **Desactivado** en `reranker.py` (memoria) |
 | **Sparse** | BM25Okapi (`rank-bm25`) | Tokenizador español propio (reemplazó jieba) |
-| **LLM** | Router custom: **Groq** (Llama 3.3 70B) → **Gemini** 2.0 Flash | Fallback automático |
+| **LLM** | Router custom: **Groq** (Llama 3.3 70B) → **Gemini** 2.5 Flash | Fallback automático |
 | **Cache** | Redis 7 (async) | TTL 1h, doble hash de clave |
 | **Frontend** | Next.js 16 + React 19 + shadcn/ui + Tailwind v4 | SSE robusto con retries |
 | **Infra** | Docker Compose, multi-stage Dockerfile, render.yaml | Objetivo: Render Free (512MB) |
@@ -60,7 +60,7 @@ app/
 │   ├── reranker.py        # DESACTIVADO (no-op)
 │   └── metadata_filter.py # Inferencia de filtros desde keywords de la query
 ├── agents/graph.py        # LegalAgentGraph (LangGraph) — INCOMPLETO
-├── llm/                   # providers.py (Groq, Gemini) + router.py (fallback)
+├── llm/                   # providers.py (Groq, Cloudflare, Gemini, Ollama) + router.py (fallback)
 ├── models/                # schemas.py, legal_unit.py (Pydantic)
 ├── services/              # query_service.py, cache.py, sse_manager.py
 ├── prompts/               # Plantillas de prompts legales (español)
@@ -70,7 +70,7 @@ app/
 core/                      # embeddings.py (singleton), runtime/resource_manager.py
 ingestion/                 # parsing, normalization, metadata, scrapers (LexiVox, AETN)
 vectorstore/               # qdrant_client.py (wrapper sincrónico)
-corpus/                    # raw/, processed/, normalized/all_units.json
+corpus/                    # raw/, normalized/all_units.json
 frontend/                  # Next.js 16 (chat, stats, componentes shadcn/ui)
 tests/                     # unit + golden regression
 evaluation/                # run_ragas_eval.py
@@ -95,13 +95,14 @@ docker/                    # Dockerfile + docker-compose.yml
 
 **Arquitectura y diseño**
 - Separación clara de capas: API → Servicios → RAG/Agente → Retrieval → Infraestructura.
-- Pipeline de retrieval bien definido y con fallbacks en cada etapa.
+- Pipeline de retrieval bien definido con fallbacks en cada etapa.
 - Singleton de embeddings (`core/embeddings.py`) con lock de hilos — evita recarga de modelo.
-- Router LLM multi-provider con fallback automático y blacklist de proveedores fallidos.
+- Router LLM multi-provider con fallback automático y blacklist de proveedores fallidos (Groq → Cloudflare → Gemini → Ollama).
 - Filtro de metadatos inferido del texto (ej. "solar" → `subsector: Solar`).
+- **Abstención**: el sistema puede declarar `insufficient_context` cuando la evidencia es débil, en vez de alucinar.
 
 **Rendimiento / asincronía**
-- BM25 CPU-bound ejecutado fuera del event loop (thread pool).
+- BM25 CPU-bound ejecutado fuera del event loop (thread pool via `asyncio.to_thread()`).
 - Warmup paralelo de embedder y Qdrant al arranque (`asyncio.gather`).
 - Gating de readiness (503) mientras se calientan recursos.
 - Caché Redis para queries repetidas.
@@ -173,7 +174,7 @@ En `app/main.py`, el lifespan lanza `_background_init(rm)` que llama `rm.warmup(
 
 **Prompt / Salida estructurada**
 - `pipeline.py` construye su propio prompt inline e ignora `app/prompts/legal_prompts.py`.
-- La **matriz de riesgos y los incentivos están hardcodeados** con valores por defecto (`pipeline.py:94-107`); nunca se derivan del contenido recuperado. El contrato del schema (`legal_citations`, risk_matrix, incentives) no se llena.
+- La **matriz de riesgos y los incentivos están hardcodeados** con valores por defecto (`pipeline.py:94-107`); nunca se derivan del contenido recuperado. El contrato del schema (`legal_citations`, risk_matrix, incentives) no se llena correctamente.
 
 **Retrieval**
 - `dense.py` hace búsqueda vectorial local con numpy sobre los documentos recibidos (camino legacy de `hybrid.retrieve_with_results`), aunque `engine.py` sí usa la búsqueda real de Qdrant.
@@ -220,9 +221,42 @@ En `app/main.py`, el lifespan lanza `_background_init(rm)` que llama `rm.warmup(
 
 ---
 
-## 10. Conclusión
+## 10. Diagrama de Arquitectura
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         CLIENT LAYER                                  │
+│   Next.js 16 + React 19 + shadcn/ui (SSE con retries)               │
+├──────────────────────────────────────────────────────────────────────┤
+│                       API LAYER · FastAPI :8000                       │
+│   query · query/stream · ingest · stats · health                     │
+├──────────────────────────────────────────────────────────────────────┤
+│                      SERVICE LAYER                                    │
+│   QueryService → Redis Cache → SSE Manager                           │
+├──────────────────────────────────────────────────────────────────────┤
+│                       RAG LAYER                                       │
+│   RAGPipeline: retrieve → context → generate (abstains if weak)     │
+│   LegalAgentGraph: retrieve → analyze → refine → risk → finalize    │
+├──────────────────────────────────────────────────────────────────────┤
+│                    RETRIEVAL ENGINE                                    │
+│   BM25 (sparse/español) ‖ Dense (Qdrant/MiniLM-L6)  → Fusion (α)   │
+│   → Reranker (disabled) → Top-K (10→5)                              │
+├──────────────────────────────────────────────────────────────────────┤
+│                       LLM LAYER                                       │
+│   Groq (Llama 3.3 70B) → Cloudflare → Gemini → Ollama               │
+├──────────────────────────────────────────────────────────────────────┤
+│                    INFRASTRUCTURE                                      │
+│   Qdrant (vector) · Redis (cache) · Embeddings (CPU) · Corpus (45)  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 11. Conclusión
 
 EnergyMind es un proyecto con **buena arquitectura conceptual**: pipeline de retrieval multi-etapa con fallbacks, router LLM con failover, warmup asíncrono, caché y un frontend moderno con SSE robusto. El diseño de capas es limpio y el tokenizador español propio de BM25 es un acierto.
+
+El sistema aborda el **desafío central** de la regulación energética boliviana — hacer documentos legales heterogéneos recuperables de forma confiable a nivel de artículos — mediante una combinación de recuperación densa y léxica, metadatos legales estructurados, y una capa LLM restringida por evidencia. La capacidad de **abstención** (campo `insufficient_context`) es una característica clave que previene alucinaciones.
 
 Sin embargo, el estado actual del código presenta **divergencias importantes entre la documentación y la implementación**, y varios defectos que impiden su operación real:
 1. La **API responde 503 en todas las consultas** (`app.state.ready` nunca se setea).
@@ -235,4 +269,4 @@ Estos son problemas de integración y pulido, no de diseño: el esqueleto es só
 
 ---
 
-*Fecha del análisis: 2026-08-14. Basado en el estado actual del repositorio (commit `f634d26` + cambios sin commitear).*
+*Fecha del análisis: 2026-08-18. Basado en el estado actual del repositorio.*
