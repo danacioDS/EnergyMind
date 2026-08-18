@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, AsyncGenerator
+from typing import Optional, Dict, Any, AsyncGenerator, List
 from loguru import logger
 
 from app.retrieval.engine import RetrievalEngine
@@ -19,11 +19,70 @@ class RAGPipeline:
         self.initialized = True
         logger.info("RAGPipeline initialized")
 
+    def _extract_risks(self, documents: List[Dict]) -> Dict:
+        """
+        Extrae riesgos del contenido recuperado.
+        Cada riesgo incluye nivel y evidencia.
+        """
+        risks = {
+            "nationalization_risk": {"level": "Low", "evidence": []},
+            "regulatory_instability": {"level": "Low", "evidence": []},
+            "legal_ambiguity": {"level": "Low", "evidence": []},
+            "constitutional_conflict_risk": {"level": "Low", "evidence": []},
+            "arbitration_protection": {"level": "Limited", "evidence": []}
+        }
+        
+        risk_keywords = {
+            "nationalization_risk": [
+                "nacionalización", "nacionalizar", "estatizar", 
+                "control estatal", "intervención estatal", "dominio originario"
+            ],
+            "regulatory_instability": [
+                "modificación", "derogación", "cambio regulatorio", 
+                "reforma", "incertidumbre", "inestabilidad"
+            ],
+            "legal_ambiguity": [
+                "interpretación", "ambigüedad", "controversia", 
+                "discrepancias", "conflicto de interpretación"
+            ],
+            "constitutional_conflict_risk": [
+                "constitución", "inconstitucional", "conflicto", 
+                "ley fundamental", "derechos constitucionales"
+            ],
+            "arbitration_protection": [
+                "arbitraje", "internacional", "CIADI", 
+                "controversias", "solución de disputas", "jurisdicción"
+            ]
+        }
+        
+        for doc in documents:
+            doc_id = doc.get("id", "")
+            texto = doc.get("texto", "").lower()
+            texto_original = doc.get("texto", "")
+            
+            for risk, keywords in risk_keywords.items():
+                for keyword in keywords:
+                    if keyword in texto:
+                        if risks[risk]["level"] == "Low":
+                            risks[risk]["level"] = "Medium"
+                        elif risks[risk]["level"] == "Medium":
+                            risks[risk]["level"] = "High"
+                        
+                        evidence_text = texto_original[:250] + "..."
+                        if not any(e.get("source") == doc_id for e in risks[risk]["evidence"]):
+                            risks[risk]["evidence"].append({
+                                "source": doc_id,
+                                "text": evidence_text
+                            })
+                        break
+        
+        return risks
+
     async def query(self, request: QueryRequest) -> QueryResponse:
         if not self.initialized:
             await self.initialize()
         
-        metadata_filter = getattr(request, 'metadata_filter', None)
+        metadata_filter = self._build_metadata_filter(request)
         
         logger.info(f"PIPELINE QUERY - question: {request.question[:50]}...")
         
@@ -70,17 +129,15 @@ Eres un asistente legal experto en legislación energética de Bolivia.
 
 INSTRUCCIONES CRÍTICAS:
 1. Responde EXCLUSIVAMENTE usando la información del CONTEXTO LEGAL proporcionado.
-2. Si el contexto contiene información sobre energías renovables, extrae y cita los artículos específicos.
-3. Busca en el contexto: "renovable", "solar", "eólica", "biomasa", "generación distribuida".
-4. Cita las fuentes específicas con número de ley, artículo y texto.
-5. Si NO encuentras información específica en el contexto, DILO CLARAMENTE y no inventes.
-6. Responde en el mismo idioma de la pregunta.
+2. Busca en el contexto palabras clave como: "renovable", "solar", "eólica", "biomasa", "generación distribuida".
+3. Cita las fuentes específicas con número de ley, artículo y texto.
+4. Si NO encuentras información específica en el contexto, DILO CLARAMENTE.
 """
         
         prompt = f"""
 {instruction}
 
-CONTEXTO LEGAL (documentos bolivianos recuperados):
+CONTEXTO LEGAL (documentos bolivianos):
 {context}
 
 PREGUNTA: {request.question}
@@ -91,17 +148,20 @@ RESPUESTA:
         logger.info("📤 Generando respuesta con Cloudflare Workers AI")
         answer_text = self.chain.generate(prompt)
         
+        # 🔥 Extraer riesgos del contenido
+        risk_data = self._extract_risks(documents)
+        
         answer = {
             "direct_conclusion": answer_text[:500] if len(answer_text) > 500 else answer_text,
             "regulatory_analysis": answer_text,
             "legal_citations": [],
             "risk_matrix": {
                 "ideological_framework": "Mixed",
-                "constitutional_conflict_risk": "Medium",
-                "nationalization_risk": "Medium",
-                "regulatory_instability": "Medium",
-                "legal_ambiguity": "Medium",
-                "arbitration_protection": "Limited"
+                "constitutional_conflict_risk": risk_data["constitutional_conflict_risk"]["level"],
+                "nationalization_risk": risk_data["nationalization_risk"]["level"],
+                "regulatory_instability": risk_data["regulatory_instability"]["level"],
+                "legal_ambiguity": risk_data["legal_ambiguity"]["level"],
+                "arbitration_protection": risk_data["arbitration_protection"]["level"],
             },
             "incentives_detected": {
                 "detected": False,
@@ -129,7 +189,7 @@ RESPUESTA:
         
         yield {"type": "start", "correlation_id": "stream"}
         
-        metadata_filter = getattr(request, 'metadata_filter', None)
+        metadata_filter = self._build_metadata_filter(request)
         
         yield {"type": "retrieval_start", "message": "Buscando documentos relevantes..."}
         
@@ -192,3 +252,14 @@ RESPUESTA:
 
     async def close(self) -> None:
         pass
+
+    def _build_metadata_filter(self, request: QueryRequest) -> Optional[Dict]:
+        """Construir filtro de metadata desde el request."""
+        filters = {}
+        if hasattr(request, 'subsector') and request.subsector:
+            filters["subsector"] = request.subsector
+        if hasattr(request, 'tipo_norma') and request.tipo_norma:
+            filters["tipo_norma"] = request.tipo_norma
+        if hasattr(request, 'vigente') and request.vigente is not None:
+            filters["vigente"] = request.vigente
+        return filters if filters else None

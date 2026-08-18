@@ -51,8 +51,8 @@ class _Settings(BaseSettings):
     BM25_INDEX_PATH: str = "cache/bm25_index.pkl"
     DEFAULT_TOP_K: int = 10
     TOP_K: int = 10
-    BM25_TOP_K: int = 20
-    DENSE_TOP_K: int = 20
+    BM25_TOP_K: int = 50
+    DENSE_TOP_K: int = 50
     FINAL_TOP_K: int = 5
     HYBRID_ALPHA: float = 0.5
     

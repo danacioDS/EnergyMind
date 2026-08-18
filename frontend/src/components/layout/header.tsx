@@ -1,42 +1,25 @@
 "use client"
 
-import Link from "next/link"
-import { Scale, BarChart3 } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import Image from "next/image"
 
-interface HeaderProps {
-  onToggleFilters: () => void
-  filtersVisible: boolean
-}
-
-export default function Header({ onToggleFilters, filtersVisible }: HeaderProps) {
+export function Header() {
   return (
-    <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="flex h-14 items-center justify-between px-4 max-w-7xl mx-auto">
-        <div className="flex items-center gap-3">
-          <Scale className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">LexEnergy Bolivia</h1>
-            <p className="text-xs text-muted-foreground hidden sm:block">
-              Legal RAG Platform &mdash; Renewable Energy Investments
-            </p>
+    <header className="border-b border-[#2A3340] bg-[#0B0F14] py-4">
+      <div className="container mx-auto max-w-6xl px-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Image
+              src="/images/logo.jpg"
+              alt="EnergyMind"
+              width={48}
+              height={48}
+              className="rounded-xl object-cover"
+            />
+            <div>
+              <h1 className="text-2xl font-bold text-white tracking-tight">EnergyMind</h1>
+              <p className="text-sm text-[#94A3B8]">Legal RAG · Renewable Energy</p>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" asChild>
-            <Link href="/stats" className="gap-2 flex items-center">
-              <BarChart3 className="h-4 w-4" />
-              <span className="hidden sm:inline">Corpus</span>
-            </Link>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onToggleFilters}
-            className="gap-2"
-          >
-            {filtersVisible ? "Hide Filters" : "Filters"}
-          </Button>
         </div>
       </div>
     </header>

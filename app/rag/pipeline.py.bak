@@ -192,3 +192,126 @@ RESPUESTA:
 
     async def close(self) -> None:
         pass
+
+    def _extract_risks(self, documents: List[Dict]) -> Dict:
+        """
+        Extrae riesgos del contenido recuperado.
+        Cada riesgo incluye nivel y evidencia.
+        """
+        # Inicializar riesgos
+        risks = {
+            "nationalization_risk": {"level": "Low", "evidence": []},
+            "regulatory_instability": {"level": "Low", "evidence": []},
+            "legal_ambiguity": {"level": "Low", "evidence": []},
+            "constitutional_conflict_risk": {"level": "Low", "evidence": []},
+            "arbitration_protection": {"level": "Limited", "evidence": []}
+        }
+        
+        # Palabras clave por tipo de riesgo
+        risk_keywords = {
+            "nationalization_risk": [
+                "nacionalización", "nacionalizar", "estatizar", 
+                "control estatal", "intervención estatal", "dominio originario"
+            ],
+            "regulatory_instability": [
+                "modificación", "derogación", "cambio regulatorio", 
+                "reforma", "incertidumbre", "inestabilidad"
+            ],
+            "legal_ambiguity": [
+                "interpretación", "ambigüedad", "controversia", 
+                "discrepancias", "conflicto de interpretación"
+            ],
+            "constitutional_conflict_risk": [
+                "constitución", "inconstitucional", "conflicto", 
+                "ley fundamental", "derechos constitucionales"
+            ],
+            "arbitration_protection": [
+                "arbitraje", "internacional", "CIADI", 
+                "controversias", "solución de disputas", "jurisdicción"
+            ]
+        }
+        
+        # Escáner de documentos
+        for doc in documents:
+            doc_id = doc.get("id", "")
+            texto = doc.get("texto", "").lower()
+            texto_original = doc.get("texto", "")
+            
+            for risk, keywords in risk_keywords.items():
+                for keyword in keywords:
+                    if keyword in texto:
+                        # Subir nivel
+                        if risks[risk]["level"] == "Low":
+                            risks[risk]["level"] = "Medium"
+                        elif risks[risk]["level"] == "Medium":
+                            risks[risk]["level"] = "High"
+                        
+                        # Añadir evidencia (evitar duplicados)
+                        evidence_text = texto_original[:250] + "..."
+                        if not any(e.get("source") == doc_id for e in risks[risk]["evidence"]):
+                            risks[risk]["evidence"].append({
+                                "source": doc_id,
+                                "text": evidence_text
+                            })
+                        break
+        
+        return risks
+
+    def _extract_risks(self, documents: List[Dict]) -> Dict:
+        """
+        Extrae riesgos del contenido recuperado.
+        Cada riesgo incluye nivel y evidencia.
+        """
+        risks = {
+            "nationalization_risk": {"level": "Low", "evidence": []},
+            "regulatory_instability": {"level": "Low", "evidence": []},
+            "legal_ambiguity": {"level": "Low", "evidence": []},
+            "constitutional_conflict_risk": {"level": "Low", "evidence": []},
+            "arbitration_protection": {"level": "Limited", "evidence": []}
+        }
+        
+        risk_keywords = {
+            "nationalization_risk": [
+                "nacionalización", "nacionalizar", "estatizar", 
+                "control estatal", "intervención estatal", "dominio originario"
+            ],
+            "regulatory_instability": [
+                "modificación", "derogación", "cambio regulatorio", 
+                "reforma", "incertidumbre", "inestabilidad"
+            ],
+            "legal_ambiguity": [
+                "interpretación", "ambigüedad", "controversia", 
+                "discrepancias", "conflicto de interpretación"
+            ],
+            "constitutional_conflict_risk": [
+                "constitución", "inconstitucional", "conflicto", 
+                "ley fundamental", "derechos constitucionales"
+            ],
+            "arbitration_protection": [
+                "arbitraje", "internacional", "CIADI", 
+                "controversias", "solución de disputas", "jurisdicción"
+            ]
+        }
+        
+        for doc in documents:
+            doc_id = doc.get("id", "")
+            texto = doc.get("texto", "").lower()
+            texto_original = doc.get("texto", "")
+            
+            for risk, keywords in risk_keywords.items():
+                for keyword in keywords:
+                    if keyword in texto:
+                        if risks[risk]["level"] == "Low":
+                            risks[risk]["level"] = "Medium"
+                        elif risks[risk]["level"] == "Medium":
+                            risks[risk]["level"] = "High"
+                        
+                        evidence_text = texto_original[:250] + "..."
+                        if not any(e.get("source") == doc_id for e in risks[risk]["evidence"]):
+                            risks[risk]["evidence"].append({
+                                "source": doc_id,
+                                "text": evidence_text
+                            })
+                        break
+        
+        return risks
